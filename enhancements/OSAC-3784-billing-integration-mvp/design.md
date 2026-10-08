@@ -4,7 +4,7 @@ authors: amoren@redhat.com
 creation-date: 2026-10-04
 last-updated: 2026-10-08
 tracking-link: https://redhat.atlassian.net/browse/OSAC-3784
-prd: https://github.com/osac-project/enhancement-proposals/pull/199
+prd: https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-3784-billing-integration-mvp/prd.md
 see-also: https://redhat.atlassian.net/browse/OSAC-3793
 replaces: N/A
 superseded-by: N/A
@@ -16,7 +16,7 @@ superseded-by: N/A
 |-------------|-------|
 | Author(s)   | Amit Oren |
 | Jira        | [OSAC-3784](https://redhat.atlassian.net/browse/OSAC-3784), [OSAC-3793](https://redhat.atlassian.net/browse/OSAC-3793) |
-| PRD         | [OSAC-3784 PRD](https://github.com/osac-project/enhancement-proposals/pull/199); [OSAC-3793 PRD](https://github.com/osac-project/enhancement-proposals/tree/main/enhancements/OSAC-3793-billing-catalog-pricing-integration/prd.md) |
+| PRD         | [OSAC-3784 PRD](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-3784-billing-integration-mvp/prd.md); [OSAC-3793 PRD](https://github.com/osac-project/enhancement-proposals/tree/main/enhancements/OSAC-3793-billing-catalog-pricing-integration/prd.md) |
 | Date        | 2026-10-07 |
 
 # 1. Overview
@@ -560,8 +560,8 @@ The design's optional-provider mode, 1:1 constraint, constrained estimate calcul
 ## Provenance
 
 Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 7673946e7
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ af6b5a4ea
+Final: manual-edit [manual] @ design 0.11.3 - 2bd6607, workspace main @ af6b5a4ea
 
-> Context changed between draft and revise.
+> Context changed between draft and manual-edit.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"af6b5a4ea","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","manual-edit","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"af6b5a4ea","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","manual-edit","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
