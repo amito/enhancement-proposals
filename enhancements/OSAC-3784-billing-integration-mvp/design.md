@@ -21,9 +21,7 @@ superseded-by: N/A
 
 # 1. Overview
 
-This combined design covers OSAC-3784 Billing Integration and OSAC-3793 Billing Catalog Pricing Integration. It proposes a provider-neutral billing API and adapter boundary to OSAC, with _Monetize 360_ (M360) as the first provider implementation. Billing is optional per deployment: OSAC may run with no billing provider, or with one configured provider. Without a provider, core catalog and resource fulfillment continue without pricing or billing gates. The public API exposes normalized account, association, pricing, estimate, cost, export, and health concepts; gives Cloud Provider Admins both an inventory of billable OSAC catalog values and normalized provider rate-card rows for rate-card completeness review; and enriches existing VMaaS/CaaS catalog list/get responses with provider-owned pricing when billing is configured. The first billing UI slice reads account status and manages tenant links; catalog-price display is included as the subsequent UX slice defined by OSAC-3793. The choices in this design do not set the release boundary: the current PRDs remain authoritative until their feature owners reconcile and revise them. See both linked PRDs for their original requirement boundaries.
-
-When billing is configured, OSAC remains the source of truth for tenant/account association and authorization, while the provider remains the source of truth for rate-card values and actual rated charges. Because the reviewed M360 API has no estimate API, the M360 adapter evaluates a constrained, verified subset of provider rate-card and pricing-logic data for prospective estimates. Coverage is evaluated in the account context of the gated action; publication does not require coverage from every tenant who may see a catalog item, and each tenant's launch is checked against its own linked account. Unresolved coverage fails the applicable billing gate and does not stop or suspend existing resources. When billing is not configured, no pricing or billing gate is applied.
+OSAC gets catalog prices and rate cards from its configured billing provider and does not store pricing details. The fulfillment service exposes one provider-neutral billing API, starting with Monetize360 (M360), so other providers can be added later. This API supports catalog pricing for VMaaS, CaaS, and BMaaS.
 
 # 2. Goals and Non-Goals
 
@@ -71,12 +69,10 @@ RevOs documents account status, catalog services, rate cards, pricing logic, and
 
 ```mermaid
 flowchart LR
-  UI[React UI] --> FAPI[Fulfillment public API<br/>REST and gRPC]
-  CLI[OSAC CLI] --> FAPI
-  FAPI --> AUTH[OSAC authz and tenant visibility]
-  AUTH --> BILLING[Billing operation handlers when enabled]
-  AUTH --> RESOURCE[Catalog and launch handlers]
-  BILLING --> STORE[(Billing association and audit store)]
+  CLIENTS[OSAC clients] --> FAPI[Fulfillment API]
+  FAPI --> BILLING[Billing operation handlers when enabled]
+  FAPI --> RESOURCE[Catalog and launch handlers]
+  BILLING --> STORE[(Billing association store)]
   BILLING --> CTRL[Internal pricing and coverage service]
   BILLING --> PROVIDER
   RESOURCE -->|when billing is enabled| CTRL
@@ -85,17 +81,23 @@ flowchart LR
   PROVIDER --> OTHER[Future provider adapter]
 ```
 
-All React UI calls to OSAC backend APIs enter through fulfillment-service's public REST/gRPC API. Billing operations (account status, account linking, estimates, catalog-value inventory, and rate-card review) and catalog/resource operations (catalog browsing and publication, resource launch) are routes or handlers behind that same API boundary, not separate browser-facing services. Fulfillment-service applies authorization and tenant visibility, then the billing and catalog/launch handlers use the same internal pricing/coverage service where needed. The CLI also calls fulfillment-service through its public API. Provider adapters remain backend-only. When billing is disabled, fulfillment-service does not initialize a provider adapter or make provider calls; the core catalog and resource handlers continue to serve requests. When M360 is configured, its billing account `externalId` is set to the OSAC `tenant_id`, which the existing metering event already sends to M360. No per-event billing-account field or metering event-schema change is part of this design. M360 attributes usage using the current `externalId` mapping, so delayed events after reassignment are not guaranteed to use the account associated at event time. OSAC retains assignment history for audit; it is not used to route delayed usage.
+OSAC clients use the fulfillment-service API. Fulfillment-service enforces authorization and tenant scope. When billing is disabled, catalog and resource operations continue without pricing or billing gates.
 
-Fulfillment-service implements a provider-neutral `BillingProvider` interface for account discovery/status, association synchronization, pricing resolution, cost reads, exports, and health. A deployment may leave billing unconfigured; in that mode no provider client or billing usage adapter is active, and no usage is submitted to a billing provider. When configured, one provider implements the interface. Draft-charge reads and charge exports are optional provider capabilities; adapters report whether each is supported. The existing `ProviderAdapter` continues to submit usage when a billing adapter is configured. Provider identity and native payloads do not appear in tenant-facing requests or responses.
+Fulfillment-service calls the configured provider through a provider-neutral adapter. Usage continues through `osac-metering` and its existing event format. M360 maps each event's `tenant_id` through the account's current `externalId`; late events after reassignment use that current mapping.
 
-For catalog reads when billing is configured, fulfillment-service first applies the existing catalog visibility and tenant authorization rules, then sends the selected tenant, catalog type/item, and default billable configuration through the same internal pricing resolver. It attaches the normalized result to the existing catalog response; it does not persist the result or instantiate a catalog-specific provider client. When billing is not configured, the same catalog list/get APIs return catalog data without a `pricing` field and do not invoke the resolver. Tenant users are bound to their authenticated tenant. A Cloud Provider Admin can preview a selected tenant only through the existing authorized tenant-selection mechanism. Under the current 1:1 association rule, a tenant's catalog price resolves against that tenant's linked account and effective pricing plan.
+When billing is configured, catalog reads use the shared pricing resolver and include its result. OSAC does not store the resolved prices. When billing is disabled, catalog responses omit pricing.
 
-Pricing resolution first checks whether the account has a contract effective for the requested date. If it does, the adapter resolves the requested service/configuration through that contract's pricing path. Only a confirmed absence of an account contract selects the service's default rate card. For M360, documented contract-service semantics may inherit the service catalog/list price when no exception rate card is attached; the adapter follows that provider-defined inheritance as part of the contract path. It does not treat a failed lookup as absence or silently switch to the default card when a contract lookup fails. The user assumes contract lookup results are unambiguous; if an unexpected ambiguous result occurs, return an error. A contract path that cannot price a component under the provider's documented rules is unresolved coverage. Select the currency-specific rate data matching the linked account's base currency and the rate effective for the planned use date. For non-gating catalog reads when billing is configured, lookup/provider errors appear as `UNAVAILABLE` with a user-safe message; when billing is disabled, catalog list/get does not invoke this resolver and omits `pricing`. Billing-gated publication and launch fail closed only when a provider is configured. A restricted evaluator handles only explicitly implemented, verified operations used by OSAC catalog components. It uses decimal arithmetic, returns component-level results, and marks missing cards, `NO_PRICE`, unknown contracts, missing mappings, or unsupported formulas as unresolved coverage. Actual usage rating remains in M360.
+### Pricing resolution
+
+1. Check the linked account for a contract effective on the requested date.
+2. If a contract exists, resolve its pricing. For M360, a contract may inherit the service catalog price when no exception rate is defined.
+3. If no contract applies, use the service's default rate card.
+4. If the lookup fails or is ambiguous, return an error. Do not fall back to the default rate card.
+5. Resolve rates in the account's currency. Missing or unsupported component prices block billing-enabled publication or launch. OSAC evaluates only verified provider pricing rules for estimates; the provider rates actual usage.
 
 ## 4.2 Data Model / Schema Changes
 
-The following are logical fields for the proposed persistence model. Names are illustrative until the private protobuf and database schema are drafted.
+The following tables describe logical fulfillment-service persistence concepts. They do not prescribe protobuf message layouts, field numbers, or physical database types.
 
 ### `billing_account`
 
@@ -132,11 +134,15 @@ Stores each time-bounded association between an OSAC tenant and a billing accoun
 
 For the current design, enforce at most one active assignment per tenant and at most one active tenant per billing account. Close the old assignment and create its replacement in one database transaction. The time-versioned model allows a future 1:N policy to relax the account-side uniqueness constraint without replacing the history model.
 
-Do not treat `audit_correlation_id` as an approved schema field. Decide whether assignment records need a correlation field when the audit model and lookup needs are defined in §9.4.
+Do not treat `audit_correlation_id` as an approved schema field. Decide whether assignment records need a correlation field when the audit model and lookup needs are defined in §9.3.
+
+### API schema boundary
+
+The billing RPCs belong in fulfillment-service's private proto API and are exposed through CleanAPI. This design defines contract behavior without prescribing message layouts or field numbers. The API must expose OSAC-opaque account IDs, normalized account status and base currency, time-bounded tenant assignments and provider-sync state, and component-level price outcomes with decimal-safe amounts. Provider-native identifiers stay internal. The service enforces tenant authorization, active ISO-4217 currency validity, and the current 1:1 active-assignment rule. Audit-specific schema remains deferred under §9.3; `asOf` semantics remain open under §9.2.
 
 ### Candidate: `billing_audit_event` (not designed)
 
-The PRD requires OSAC-side audit records for billing actions, but this design has not defined the audit model. `billing_audit_event` is only a placeholder name; no table, fields, storage mechanism, event taxonomy, retention policy, authorization model, or read interface is selected here. The implementation may use an existing audit facility rather than a new billing-specific table. Resolve §9.4 before treating audit persistence as a schema change.
+The PRD requires OSAC-side audit records for billing actions, but this design has not defined the audit model. `billing_audit_event` is only a placeholder name; no table, fields, storage mechanism, event taxonomy, retention policy, authorization model, or read interface is selected here. The implementation may use an existing audit facility rather than a new billing-specific table. Resolve §9.3 before treating audit persistence as a schema change.
 
 Use a transactional outbox or equivalent durable reconciliation record for provider-link updates so retries cannot lose a mapping update after OSAC accepts it. For M360, linking sets the selected billing account's `externalId` to the OSAC `tenant_id`; a link is `CONNECTED` only after that mapping has been verified. Until then, pricing and publish/launch checks fail with `BILLING_PROFILE_PENDING`. Account reassignment closes the old effective interval and creates the new one at the operation's effective time. Tenant deletion revokes normal tenant access immediately, proceeds without waiting for M360 cleanup, and retains the association as a read-only tombstone until provider retention permits cleanup. Suspension does not change the account association or provider account status. Historical OSAC assignments support audit only; M360 uses the current `externalId` mapping for usage events and the current event format cannot target the historical account.
 
@@ -159,7 +165,7 @@ Define new RPCs in fulfillment-service private protos and expose REST transcodin
 | Current/history costs | `GET /v1/billing/costs?tenantId=…&from=…&to=…&groupBy=…` | Normalize provider-calculated costs by service/resource/project, preserve nested project IDs, currency, provider period, and `asOf`. Requires a configured provider; otherwise return `FAILED_PRECONDITION/BILLING_NOT_CONFIGURED`. Filter to the authorized tenant and projects. No account-balance operation is defined. |
 | Draft-charge review | `GET /v1/billing/draft-charges?tenantId=…&period=…` | Optional provider capability. When supported, return a stable, read-only tenant-scoped charge view for the period; repeated reads do not create provider financial objects. When unsupported, expose that capability in provider status and return `UNIMPLEMENTED/PROVIDER_CAPABILITY_UNSUPPORTED`; never imply that unsupported means an empty charge list. |
 | Tenant-scoped charge export | `POST /v1/billing/exports` | Optional provider capability. When supported, accept tenant and billing period, validate authorization, and return an export operation ID/status. Provider export is permitted only when its result is demonstrably tenant-scoped. Under the current 1:1 rule, no cross-tenant split is needed; preserve an adapter capability check for future 1:N. When unsupported, expose that capability in provider status and return `UNIMPLEMENTED/PROVIDER_CAPABILITY_UNSUPPORTED`. |
-| Audit | Candidate: `GET /v1/billing/audit-events?tenantId=…&from=…&to=…` | The PRD requires OSAC-side audit records for billing actions. This route and a billing-specific audit read API are unapproved proposals; the audit design must decide the record source, storage, access, and read surface. See §9.4. |
+| Audit | Candidate: `GET /v1/billing/audit-events?tenantId=…&from=…&to=…` | The PRD requires OSAC-side audit records for billing actions. This route and a billing-specific audit read API are unapproved proposals; the audit design must decide the record source, storage, access, and read surface. See §9.3. |
 
 Provider status must report `SUPPORTED` or `UNSUPPORTED` for the optional draft-charge-read and charge-export capabilities. The reviewed M360 RevOs documentation does not define a draft-charge selector or charge-export endpoint; configure either capability as unsupported unless the applicable M360 contract confirms it. An unsupported operation returns `UNIMPLEMENTED/PROVIDER_CAPABILITY_UNSUPPORTED` rather than an empty result or simulated success, and the CLI/UI surface the provider's capability status.
 
@@ -197,7 +203,7 @@ Example response:
 
 The separate rate-card-rows operation adapts each provider's currency-specific card representation to a provider-neutral list for the Rates UI. One normalized row represents one provider pricing rule; it carries the service, resource predicates (for example, `ANY` for a provider wildcard and `EQUALS` for a concrete value), rate amount/unit, and zero or more OSAC catalog-item matches. The UI can render each row as a resource/rate/catalog-item line, including “Not in catalog” when no catalog item matches. Each row retains the provider's rate unit. For time-based rates, the response may also include the fixed 730-hour monthly projection; provider-supplied hourly or monthly rates remain distinguishable from OSAC-derived projections. Unsupported provider rule shapes are reported as unsupported rows with a safe reason, not returned as provider-native JSON or converted to a fabricated amount. This list is for administration and comparison; only the resolver determines whether a specific account, configuration, and effective date have complete price coverage.
 
-The `asOf` fields in the normalized examples below are proposed OSAC response fields, not fields documented by M360. RevOs rate-card APIs expose version and effective-period metadata, but no generic provider observation timestamp; the behavior when that timestamp is unavailable remains open in §9.3.
+The `asOf` fields in the normalized examples below are proposed OSAC response fields, not fields documented by M360. RevOs rate-card APIs expose version and effective-period metadata, but no generic provider observation timestamp; the behavior when that timestamp is unavailable remains open in §9.2.
 
 Example response for an account whose contract pricing is selected. This example assumes the source rates are hourly and shows their monthly projections using 730 hours:
 
@@ -293,7 +299,7 @@ The catalog response adds a normalized `pricing` object. Example:
 }
 ```
 
-When billing is configured, `status` is `AVAILABLE` only when every required billable component is resolved, including valid zero-priced components. Use `COVERAGE_GAP` for missing, unmapped, or unsupported components and `UNAVAILABLE` when a lookup against the configured provider cannot establish a trustworthy current result; both non-available states include a user-safe `message` and do not claim a complete total. Components include metered and non-metered charges when supplied by the provider. If the provider is unavailable after the five-minute cache TTL and a prior complete `AVAILABLE` result is retained, return its known amounts and components with `status: AVAILABLE`, `isStale: true`, and a safe stale-price message. If no prior complete result is available, return `UNAVAILABLE` with no amount. If billing is not configured, catalog list/get omits `pricing` rather than returning `UNAVAILABLE`. `isStale` is separate from the `asOf` semantics left open in §9.3. Stale pricing supports catalog browsing only; a stale result cannot satisfy a publish/launch pricing gate. Preserve decimal values without an additional OSAC rounding step; UI formatting to 2–3 fractional digits is sufficient, and configurable display precision is a nice-to-have. Exact protobuf placement remains an implementation detail. When billing is configured, catalog-list pricing waits for a final result for every returned item rather than returning an incomplete list when a response deadline elapses.
+When billing is configured, `status` is `AVAILABLE` only when every required billable component is resolved, including valid zero-priced components. Use `COVERAGE_GAP` for missing, unmapped, or unsupported components and `UNAVAILABLE` when a lookup against the configured provider cannot establish a trustworthy current result; both non-available states include a user-safe `message` and do not claim a complete total. Components include metered and non-metered charges when supplied by the provider. If the provider is unavailable after the five-minute cache TTL and a prior complete `AVAILABLE` result is retained, return its known amounts and components with `status: AVAILABLE`, `isStale: true`, and a safe stale-price message. If no prior complete result is available, return `UNAVAILABLE` with no amount. If billing is not configured, catalog list/get omits `pricing` rather than returning `UNAVAILABLE`. `isStale` is separate from the `asOf` semantics left open in §9.2. Stale pricing supports catalog browsing only; a stale result cannot satisfy a publish/launch pricing gate. Preserve decimal values without an additional OSAC rounding step; UI formatting to 2–3 fractional digits is sufficient, and configurable display precision is a nice-to-have. The protobuf message layout and field numbers are left to implementation; preserve the response semantics above. When billing is configured, catalog-list pricing waits for a final result for every returned item rather than returning an incomplete list when a response deadline elapses.
 
 The API/CLI/UI surface must render catalog metadata when pricing is unavailable and show the last known complete cached price with an explicit stale marker when a configured provider cannot refresh it. With billing disabled, the UI shows catalog data without a price and may use provider status to indicate billing is not configured. When billing is configured, a billing-gated publish or launch requires an uncached live check; stale pricing cannot satisfy the gate, and the action remains blocked while current coverage is unavailable or unresolved. A global catalog item does not require coverage checks against every potential tenant; each launch uses the requesting tenant's linked account. An editable billable field sets `price_may_vary=true`; the displayed amount remains the price for the default configuration.
 
@@ -439,7 +445,7 @@ Add an idempotent export API/CLI flow for a tenant and billing period when the c
 
 **Requirements:** FR-9, FR-19
 
-The PRD requires OSAC-side billing audit records. The record model, persistence mechanism, retention, authorization, and API/CLI read contract remain to be designed. `billing_audit_event` and the route in §4.3 are placeholders, not approved interfaces or schema. Whether the React UI presents audit data also remains open; see §9.4.
+The PRD requires OSAC-side billing audit records. The record model, persistence mechanism, retention, authorization, and API/CLI read contract remain to be designed. `billing_audit_event` and the route in §4.3 are placeholders, not approved interfaces or schema. Whether the React UI presents audit data also remains open; see §9.3.
 
 ## IC-8: Existing usage event and current M360 account mapping
 
@@ -501,6 +507,14 @@ Add a read-only `GET /v1/billing/catalog-pricing-inputs` operation for Cloud Pro
 
 Add a read-only `GET /v1/billing/rate-card-items` operation for Cloud Provider Admins when a provider is configured. Without one, return `FAILED_PRECONDITION/BILLING_NOT_CONFIGURED`. Return provider rates as normalized rows grouped by OSAC service; each row contains an opaque OSAC-facing ID, normalized resource predicates, one or more currency/amount/unit values, and matching OSAC catalog-item references. Preserve wildcard predicates such as `ANY` and exact predicates such as `EQUALS`; do not expand one provider rule into catalog-value combinations. With an authorized `tenantId`, select the account's contract pricing first and use the default service rate card only when provider lookup confirms no account contract applies; `currencyCode` is optional and, if supplied, must match the account currency. Without a tenant, require `currencyCode` and list the default service cards for that currency. `effectiveAt` defaults to today. Preserve native rate units and label any fixed 730-hour monthly projection as OSAC-derived. Do not expose provider-native IDs or payloads. A failed or unexpected ambiguous contract lookup is an error, not a default-card fallback. This endpoint supports admin review and row rendering; `pricing:resolve` remains authoritative for configuration-specific coverage and estimate decisions.
 
+# Drawbacks
+
+- **The provider boundary adds work while M360 is the only supported provider.** Normalized account, price, and charge contracts plus adapter-specific translation require ongoing maintenance. That cost preserves the option to change providers without exposing provider-specific APIs to OSAC clients.
+- **Live pricing gates depend on provider latency and availability.** A configured provider can delay or block new billing-gated publication and launch. Bounded parallel requests and short-lived caching reduce catalog-read latency, but the selected live check remains required for gated actions.
+- **Stale catalog prices can mislead users.** The UI must identify stale values clearly, and stale values cannot authorize publication or launch. This keeps browsing useful during an outage while preventing an old price from satisfying a live gate.
+- **Account reassignment has a delayed-usage limitation.** M360 attributes a metering event using the current `externalId` mapping for its `tenant_id`; the current event format cannot direct late usage to the former account. Assignment history supports OSAC audit and reconciliation but does not change that provider behavior.
+- **The estimate adapter must interpret provider pricing rules.** M360 has no estimate API, so OSAC must maintain a constrained evaluator for the documented rate-card operations it supports. Unsupported formulas remain unresolved rather than being guessed, which can make some provider prices unavailable for estimates.
+
 # 6. Alternatives Considered
 
 - **Expose M360 routes and fields directly to the React UI.** This matches the current prototype’s data model but binds every client to M360 account IDs, approval fields, and RevOs pricing structures. It was rejected because the user expects Red Hat Cost Management or another provider to be possible behind the same OSAC API.
@@ -555,13 +569,17 @@ The design's optional-provider mode, 1:1 constraint, constrained estimate calcul
 - **Owner:** OSAC billing feature owners with the platform audit/security owners
 - **Impact:** §4.2, §4.3, §5/IC-7, and TC-FR9-01. The PRD requires OSAC-side audit records, but this design has not selected the event taxonomy, source of truth, storage, immutability, retention, authorization, or API/CLI/UI read surface. Decide whether a billing-specific table is needed and whether assignment records need `audit_correlation_id`; update the candidate data model and test case after that decision.
 
+# Graduation Criteria
+
+Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview -> Tech Preview -> GA based on production deployment feedback.
+
 ---
 
 ## Provenance
 
 Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 7673946e7
-Final: manual-edit [manual] @ design 0.11.3 - 2bd6607, workspace main @ af6b5a4ea
+Final: respond @ design 0.11.5 - 6d28c88, workspace main @ af6b5a4ea
 
-> Context changed between draft and manual-edit.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"af6b5a4ea","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","manual-edit","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"6d28c88","source_repo":"af6b5a4ea","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","manual-edit","manual-edit","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","respond","respond","respond","respond","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
