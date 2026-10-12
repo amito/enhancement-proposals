@@ -3,11 +3,11 @@
 ## Overview
 
 - **Feature:** Combined OSAC-3784 — Billing Integration and OSAC-3793 — Billing Catalog Pricing Integration
-- **Total test cases:** 47
-- **Requirements covered:** 39 of 40
-- **Interface changes covered:** 17 of 17
+- **Total test cases:** 48
+- **Requirements covered:** 40 of 40
+- **Interface groups covered:** 17 of 17
 
-Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC-3784 PRD stories; FR-19 through FR-22 and FR-34 trace user-directed decisions; FR-23 through FR-31 trace OSAC-3793 catalog-pricing requirements; FR-32 and FR-33 trace the catalog-input inventory and normalized provider rate-card rows; NFR-1 through NFR-6 trace cross-cutting constraints. Unless a case explicitly says billing is disabled, billing-specific cases assume one provider is configured. The catalog-pricing cases below replace the original OSAC-3793 test IDs from the pre-merge testplan.
+FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. Interface rows name the affected service or component; the design's API methods are listed in §4.3 of `03-design.md`. User stories are the source of requirements. Unless a case explicitly says billing is disabled, billing-specific cases assume one provider is configured. The catalog-pricing cases below replace the pre-merge OSAC-3793 test IDs; the original independent testplan is preserved in the backup directory.
 
 ## Test Cases
 
@@ -15,9 +15,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR1-01: Deliver one usage event once after provider retry
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-8 | critical | automated |
+| MeteringUsage | critical | automated |
 
 ##### Preconditions
 
@@ -38,13 +38,13 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR2-01: Link an active existing account and reject conflicts
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-1, IC-2 | high | automated |
+| BillingProviderStatuses/BillingAccounts, TenantBillingAssignments | high | automated |
 
 ##### Preconditions
 
-- A platform billing admin can access an active existing provider account with a valid ISO-4217 currency.
+- A Cloud Provider Admin can access an active existing provider account with a valid ISO-4217 currency.
 - Another active billing account is already linked to a different tenant.
 
 ##### Steps
@@ -63,9 +63,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR3-01: Filter account-level provider results to the requested tenant and projects
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5, IC-6, IC-12 | critical | automated |
+| BillingCosts/DraftCharges/BillingInvoices, BillingExports, OPAAuthorization | critical | automated |
 
 ##### Preconditions
 
@@ -86,9 +86,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR4-01: Keep a billing tombstone after tenant deletion
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-2, IC-8 | critical | automated |
+| TenantBillingAssignments, MeteringUsage | critical | automated |
 
 ##### Preconditions
 
@@ -106,13 +106,13 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 - The queued event retains its `tenant_id` and is delivered against the linked M360 account's matching `externalId`.
 - The assignment is marked read-only/deleted and remains stored until the configured provider-retention cleanup condition is met.
 
-### FR-5: Require coverage for every billable component before publication/provisioning
+### FR-5: Require provider rates for every billable component before publication/provisioning
 
 #### TC-FR5-01: Block publication when a component has no current rate
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-3 | critical | automated |
+| PricingQueries | critical | automated |
 
 ##### Preconditions
 
@@ -128,15 +128,15 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 - Pricing resolution returns `COVERAGE_GAP` and identifies the uncovered component.
 - Publication returns `FAILED_PRECONDITION/COVERAGE_GAP`; the item remains unpublished.
 
-#### TC-FR5-02: Block publication for unsupported formula or explicit no-price row
+#### TC-FR5-02: Block publication for unsupported rate rule or explicit no-price row
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-3 | critical | automated |
+| PricingQueries | critical | automated |
 
 ##### Preconditions
 
-- The provider fixture supplies either an unsupported pricing formula or a `NO_PRICE` rate row for a required component.
+- The provider fixture supplies either an unsupported rate-rule shape or a `NO_PRICE` row for a required component.
 
 ##### Steps
 
@@ -145,16 +145,16 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 ##### Expected Results
 
-- Resolution reports `COVERAGE_GAP` with `UNSUPPORTED_FORMULA` or `NO_PRICE` for the affected component.
+- Resolution reports `COVERAGE_GAP` with an unsupported-rule reason or `NO_PRICE` for the affected component.
 - Publication is rejected and no estimate is represented as a complete total.
 
 ### FR-6: Read draft charges without creating provider financial records
 
 #### TC-FR6-01: Return a stable draft-charge view for repeated reads
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5, IC-13 | high | automated |
+| BillingCosts/DraftCharges/BillingInvoices, BillingCLI | high | automated |
 
 ##### Preconditions
 
@@ -174,9 +174,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR7-01: Make charge export tenant-scoped and idempotent
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-6 | critical | automated |
+| BillingExports | critical | automated |
 
 ##### Preconditions
 
@@ -196,9 +196,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR8-01: Deny billing mutations to callers without billing-admin permission
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-12 | critical | automated |
+| OPAAuthorization | critical | automated |
 
 ##### Preconditions
 
@@ -217,14 +217,14 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR9-01: Verify OSAC audit records for billing actions (audit design pending)
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-7, IC-13 | high | automated |
+| BillingAudit-deferred, BillingCLI | high | automated |
 
 ##### Preconditions
 
-- A platform billing admin can link an account and request an export.
-- The audit model and authorized read surface remain undecided per design §9.4. This case is a behavioral placeholder and is not execution-ready.
+- A Cloud Provider Admin can link an account and request an export.
+- The audit model and authorized read surface remain undecided per design §9.3. This case is a behavioral placeholder and is not execution-ready.
 
 ##### Steps
 
@@ -241,9 +241,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR10-01: Preserve resource operations and queued usage during provider outage
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-8, IC-10 | critical | automated |
+| MeteringUsage, ProviderHealth | critical | automated |
 
 ##### Preconditions
 
@@ -265,9 +265,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR11-01: Render configuration without embedding credentials
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-9 | critical | automated |
+| ProviderConfig | critical | automated |
 
 ##### Preconditions
 
@@ -286,9 +286,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR12-01: Route events on either side of the provider switch boundary
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-8, IC-9 | high | automated |
+| MeteringUsage, ProviderConfig | high | automated |
 
 ##### Preconditions
 
@@ -310,9 +310,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR13-01: Mark billing health degraded when delivery is stuck
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-10 | high | automated |
+| ProviderHealth | high | automated |
 
 ##### Preconditions
 
@@ -331,9 +331,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR14-01: Filter and group provider costs by service and resource
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5 | high | automated |
+| BillingCosts/DraftCharges/BillingInvoices | high | automated |
 
 ##### Preconditions
 
@@ -345,15 +345,15 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 ##### Expected Results
 
-- The response contains only the requested tenant and period, with separate VMaaS/CaaS groups, currency, and `asOf`.
+- The response contains only the requested tenant and period, with separate VMaaS/CaaS groups, currency, and freshness metadata selected under design §9.2.
 
 ### FR-15: Aggregate costs by nested Project hierarchy
 
 #### TC-FR15-01: Preserve parent/child Project attribution in grouped costs
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5 | high | automated |
+| BillingCosts/DraftCharges/BillingInvoices | high | automated |
 
 ##### Preconditions
 
@@ -367,13 +367,38 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 - The response contains separate parent and child Project identifiers, the parent-child relationship, and totals that equal the returned underlying rows.
 
-### FR-17: Return latest calculated charges with `asOf` and scoped access
+### FR-16: View past invoices and itemized charge breakdowns
 
-#### TC-FR17-01: Return provider freshness metadata without exposing another tenant
+#### TC-FR16-01: List and read invoices for the authorized tenant
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5, IC-12 | high | automated |
+| BillingCosts/DraftCharges/BillingInvoices, `BillingInvoices.List`, `BillingInvoices.Get` | high | automated |
+
+##### Preconditions
+
+- Provider fixtures contain invoices and itemized lines for the caller's tenant and another tenant.
+- The caller is a Tenant Admin for the first tenant.
+
+##### Steps
+
+1. List the caller's invoices for a period.
+2. Get one invoice from the list.
+3. Attempt to get an invoice belonging to the other tenant.
+
+##### Expected Results
+
+- The list and invoice detail contain only the caller's authorized tenant data and itemized charge breakdown.
+- The other tenant's invoice is not disclosed.
+- Reading an invoice does not create or modify a provider invoice. An unsupported provider capability returns `UNIMPLEMENTED/PROVIDER_CAPABILITY_UNSUPPORTED`.
+
+### FR-17: Return latest calculated charges with tenant/project scope
+
+#### TC-FR17-01: Return provider cost metadata without exposing another tenant
+
+| Interface / component | Priority | Automation |
+|-----------------|----------|------------|
+| BillingCosts/DraftCharges/BillingInvoices, OPAAuthorization | high | automated |
 
 ##### Preconditions
 
@@ -385,16 +410,16 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 ##### Expected Results
 
-- The response includes the provider’s latest `asOf` timestamp and authorized rows only.
+- The response includes the freshness metadata selected under design §9.2 and authorized rows only.
 - No rated-transaction or account-balance view is rendered in the first billing UI slice.
 
 ### FR-18: Return cost history for accessible resources and Projects
 
 #### TC-FR18-01: Restrict historical cost periods to the caller’s resource/project scope
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5, IC-12 | high | automated |
+| BillingCosts/DraftCharges/BillingInvoices, OPAAuthorization | high | automated |
 
 ##### Preconditions
 
@@ -414,9 +439,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR19-01: Render normalized account status, association, and disabled-provider state
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-1, IC-11 | high | manual |
+| BillingProviderStatuses/BillingAccounts, AccountLinkUI | high | manual |
 
 ##### Preconditions
 
@@ -425,7 +450,7 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 ##### Steps
 
-1. Open the React provider-admin Billing page as a platform billing admin with the configured-provider fixture and refresh the account list.
+1. Open the React provider-admin Billing page as a Cloud Provider Admin with the configured-provider fixture and refresh the account list.
 2. Load the page with the no-provider fixture.
 
 ##### Expected Results
@@ -437,9 +462,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR20-01: Calculate and display hourly and monthly recurring estimate
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-4 | high | automated |
+| PriceEstimates | high | automated |
 
 ##### Preconditions
 
@@ -460,9 +485,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR20-02: Preserve a provider-native non-hourly rate unit
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-4 | medium | automated |
+| PriceEstimates | medium | automated |
 
 ##### Preconditions
 
@@ -477,15 +502,15 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 - The response preserves the provider’s monthly unit and amount, and returns the equivalent hourly amount using `monthly ÷ 730`.
 - The response does not perform currency conversion.
 
-#### TC-FR20-03: Show estimate freshness and units in the React launch panel
+#### TC-FR20-03: Show estimate date and units in the launch panel
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-4 | high | manual |
+| PriceEstimates | high | manual |
 
 ##### Preconditions
 
-- The launch wizard receives an estimate response with hourly and monthly recurring totals, account currency, effective date, and `asOf`.
+- The launch wizard receives an estimate response with hourly and monthly recurring totals, account currency, and effective date.
 
 ##### Steps
 
@@ -495,15 +520,15 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 ##### Expected Results
 
 - The launch panel displays both the per-hour amount and the 730-hour monthly projection in the account currency.
-- The updated response date/freshness is shown, and the amount changes to match the selected configuration.
+- The effective date is shown, and the amount changes to match the selected configuration.
 
 ### FR-21: Block new publish/launch for inactive accounts or unresolved/unavailable coverage
 
 #### TC-FR21-01: Reject launch for an inactive linked account
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-3, IC-4 | critical | automated |
+| PricingQueries, PriceEstimates | critical | automated |
 
 ##### Preconditions
 
@@ -520,9 +545,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR21-02: Reject publish and launch for unresolved component coverage
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-3, IC-4 | critical | automated |
+| PricingQueries, PriceEstimates | critical | automated |
 
 ##### Preconditions
 
@@ -540,9 +565,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR21-03: Reject a live gate check when the provider is unavailable
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-3, IC-4 | critical | automated |
+| PricingQueries, PriceEstimates | critical | automated |
 
 ##### Preconditions
 
@@ -562,9 +587,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR22-01: Preserve assignment history and the existing usage event contract
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-2, IC-8 | critical | automated |
+| TenantBillingAssignments, MeteringUsage | critical | automated |
 
 ##### Preconditions
 
@@ -588,9 +613,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR23-01: VM catalog item includes available pricing
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-14 | high | automated |
+| CatalogPricingAPI | high | automated |
 
 ##### Preconditions
 
@@ -610,9 +635,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR24-01: Cluster catalog item includes available pricing
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-14 | high | automated |
+| CatalogPricingAPI | high | automated |
 
 ##### Preconditions
 
@@ -632,9 +657,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR25-01: Tenant's linked account plan determines the returned price
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-1, IC-14 | critical | automated |
+| BillingProviderStatuses/BillingAccounts, CatalogPricingAPI | critical | automated |
 
 ##### Preconditions
 
@@ -655,9 +680,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR26-01: Pricing includes all returned components and currency
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-14 | high | automated |
+| CatalogPricingAPI | high | automated |
 
 ##### Preconditions
 
@@ -674,31 +699,32 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 ### FR-27: Represent unavailable pricing separately from incomplete coverage
 
-#### TC-FR27-01: Provider timeout leaves catalog item browsable without a price
+#### TC-FR27-01: Catalog timeout returns items with explicit pricing states
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-14 | critical | automated |
+| CatalogPricingAPI | critical | automated |
 
 ##### Preconditions
 
-- The provider fake times out the catalog-pricing request.
+- The provider fake times out the list pricing request. One item has no cached price; another has a retained complete price older than the freshness window.
 
 ##### Steps
 
-1. Request the catalog list or item.
-2. Inspect the catalog response and pricing state.
+1. Request the catalog list.
+2. Inspect both items and their pricing states.
+3. Attempt a billing-gated launch for the stale-priced item.
 
 ##### Expected Results
 
-- The catalog request succeeds and includes the item with `pricing.status=UNAVAILABLE` and no fabricated amount.
-- The catalog remains browsable; the separate publication/launch gate remains fail-closed under TC-FR21-03.
+- The catalog list returns after its timeout and includes both items. The item without a cached price is `UNAVAILABLE` with no amount; the item with a retained amount is `STALE` and includes that amount.
+- The catalog remains browsable, but neither result satisfies the live publish/launch gate.
 
 #### TC-FR27-02: Missing component rate is surfaced as a coverage gap
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-3, IC-14 | high | automated |
+| PricingQueries, CatalogPricingAPI | high | automated |
 
 ##### Preconditions
 
@@ -717,9 +743,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR28-01: CLI renders component pricing and unavailable state
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-13, IC-15 | high | automated |
+| BillingCLI, CatalogPricingUI | high | automated |
 
 ##### Preconditions
 
@@ -736,9 +762,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR28-02: Web catalog displays pricing states and keeps items browsable
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-15 | high | automated |
+| CatalogPricingUI | high | automated |
 
 ##### Preconditions
 
@@ -758,9 +784,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR29-01: Hidden catalog item and its price are not disclosed
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-12, IC-14 | critical | automated |
+| OPAAuthorization, CatalogPricingAPI | critical | automated |
 
 ##### Preconditions
 
@@ -781,9 +807,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR30-01: Provider admin previews only an authorized selected tenant's price
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-12, IC-15 | high | automated |
+| OPAAuthorization, CatalogPricingUI | high | automated |
 
 ##### Preconditions
 
@@ -805,9 +831,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR31-01: Editable billable field sets price-may-vary
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-14, IC-15 | medium | automated |
+| CatalogPricingAPI, CatalogPricingUI | medium | automated |
 
 ##### Preconditions
 
@@ -827,9 +853,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR32-01: Return all distinct billable values and their catalog references
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-16 | high | automated |
+| CatalogPricingInputs | high | automated |
 
 ##### Preconditions
 
@@ -852,9 +878,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR33-01: Serialize provider rules as one normalized row per UI line
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-17 | high | automated |
+| ProviderRateCardItems | high | automated |
 
 ##### Preconditions
 
@@ -876,9 +902,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR33-02: Select contract pricing before the default service card
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-17 | high | automated |
+| ProviderRateCardItems | high | automated |
 
 ##### Preconditions
 
@@ -901,9 +927,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-NFR5-01: Repeated reads observe provider price changes without OSAC price records
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-14 | high | automated |
+| CatalogPricingAPI | high | automated |
 
 ##### Preconditions
 
@@ -924,9 +950,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-NFR6-01: Catalog pricing invokes the shared billing pricing resolver
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-3, IC-14 | high | automated |
+| PricingQueries, CatalogPricingAPI | high | automated |
 
 ##### Preconditions
 
@@ -946,9 +972,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-FR34-01: Preserve catalog and provisioning APIs when billing is disabled
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-1, IC-2, IC-3, IC-4, IC-5, IC-6, IC-9, IC-14, IC-16, IC-17 | critical | automated |
+| BillingProviderStatuses/BillingAccounts, TenantBillingAssignments, PricingQueries, PriceEstimates, BillingCosts/DraftCharges/BillingInvoices, BillingExports, ProviderConfig, CatalogPricingAPI, CatalogPricingInputs, ProviderRateCardItems | critical | automated |
 
 ##### Preconditions
 
@@ -973,9 +999,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-NFR1-01: Apply OSAC visibility checks before provider requests
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-12 | critical | automated |
+| OPAAuthorization | critical | automated |
 
 ##### Preconditions
 
@@ -993,9 +1019,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-NFR2-01: Recover after adapter restart without losing or duplicating usage
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-8, IC-10 | critical | automated |
+| MeteringUsage, ProviderHealth | critical | automated |
 
 ##### Preconditions
 
@@ -1014,9 +1040,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-NFR3-01: Redact provider-only fields from public API responses and logs
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-1, IC-4, IC-9, IC-14, IC-15 | critical | automated |
+| BillingProviderStatuses/BillingAccounts, PriceEstimates, ProviderConfig, CatalogPricingAPI, CatalogPricingUI | critical | automated |
 
 ##### Preconditions
 
@@ -1036,9 +1062,9 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 #### TC-NFR4-01: Return the same normalized account, estimate, and rate-row schemas from two adapters
 
-| Interface Change | Priority | Automation |
+| Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| IC-1, IC-3, IC-4, IC-14, IC-17 | high | automated |
+| BillingProviderStatuses/BillingAccounts, PricingQueries, PriceEstimates, CatalogPricingAPI, ProviderRateCardItems | high | automated |
 
 ##### Preconditions
 
@@ -1057,14 +1083,13 @@ Requirement IDs are defined in §5 of `design.md`. FR-1 through FR-18 trace OSAC
 
 ### Requirement Coverage Gaps
 
-- **FR-16 (PRD invoice-view story):** No provider invoice API or UI is included because the user previously deferred invoice retrieval. The PRD still contains this story. Reconcile the PRD before approval; if invoice viewing remains required, add a normalized invoice endpoint, access rules, and test cases.
-- **FR-9 audit implementation:** TC-FR9-01 captures the required outcome, but the audit model, storage, retention, authorization, and read surface remain open in design §9.4. The case is not execution-ready, and no follow-up Jira story exists yet.
+- - **FR-9 audit implementation:** TC-FR9-01 captures the required outcome, but the audit model, storage, retention, authorization, and read surface remain open in design §9.3. The case is not execution-ready, and no follow-up Jira story exists yet.
 
-All other PRD and user-directed requirements have at least one behavioral test case.
+All 40 grouped requirements have at least one behavioral test case. The audit case remains unassigned and not execution-ready until the audit design is decided.
 
-### Interface Change Coverage Gaps
+### Interface Coverage Gaps
 
-All 17 interface changes have at least one behavioral test case.
+All 17 interface groups have at least one behavioral test case.
 
 ### Planning Evidence Matrix — Billing Foundation (OSAC-3784)
 
@@ -1077,11 +1102,11 @@ The 30 pre-existing OSAC-3784 cases below are retained. Work ownership is a `[DE
 | TC-FR3-01 | fulfillment-service: tenant/project-filtered billing reads | Unit; `[DEV]` story not created | Proposed billing server tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OSAC filters and response projection real; provider account-level rows faked; no live provider. |
 | TC-FR4-01 | fulfillment-service: deleted-tenant billing tombstone persistence | Component integration; `[DEV]` story not created | Proposed billing persistence test under `it/`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Deployed service and database real; provider cleanup/retention faked. No provider deletion boundary is exercised. |
 | TC-FR5-01 | fulfillment-service: block publication for a missing rate | Unit; `[DEV]` story not created | Proposed pricing/publish tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Publication handler and gate real; provider rate lookup faked. Does not prove M360 rate coverage. |
-| TC-FR5-02 | fulfillment-service: block unsupported formula or explicit no-price row | Unit; `[DEV]` story not created | Proposed pricing/publish tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Formula allowlist and gate real; unsupported provider response faked. Formula semantics still require provider validation. |
+| TC-FR5-02 | fulfillment-service: block unsupported rate rule or explicit no-price row | Unit; `[DEV]` story not created | Proposed pricing/publish tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Rate-rule matching and gate real; an unsupported provider rate shape is faked. Supported shapes require provider validation. |
 | TC-FR6-01 | fulfillment-service: stable, read-only draft-charge view | Unit; `[DEV]` story not created | Proposed billing server tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | API projection real; provider response faked and repeated; provider-side non-mutation is not proven by a fake. |
 | TC-FR7-01 | fulfillment-service: tenant-scoped idempotent charge export | Unit; `[DEV]` story not created | Proposed export handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Authorization, tenant filtering, and idempotency logic real; payment/provider export faked. Real provider scoping is an open contract gap. |
 | TC-FR8-01 | fulfillment-service: billing mutation authorization | Unit; `[DEV]` story not created | Proposed auth/policy tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OPA/application policy and request path real in process; identities and provider are test fixtures; no live IdP. |
-| TC-FR9-01 | OSAC audit facility: record billing actions | Tier/location/owner unresolved pending design §9.4 | No test location or command selected until the audit source, storage, and read contract are defined | Test must exercise the selected durable audit boundary. Provider actions can be faked; current design does not establish a billing-specific table or audit API. No follow-up Jira story is assigned. |
+| TC-FR9-01 | OSAC audit facility: record billing actions | Tier/location/owner unresolved pending design §9.3 | No test location or command selected until the audit source, storage, and read contract are defined | Test must exercise the selected durable audit boundary. Provider actions can be faked; current design does not establish a billing-specific table or audit API. No follow-up Jira story is assigned. |
 | TC-FR10-01 | fulfillment-service: resource APIs remain available during provider outage | Component integration; `[DEV]` story not created | Proposed API case under `it/`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Deployed service/database real; billing provider failure injected. Metering queue recovery is a separate required boundary and is not covered by this row. |
 | TC-FR10-01 | osac-metering: queued usage is delivered after provider recovery | Component integration; owner/ticket unresolved | No runnable suite/command is documented; OSAC-4846 tracks unavailable Kafka integration infrastructure | Kafka, adapter restart, offsets, and recovery must run for real with a controllable provider. Unit tests with a fake do not prove the transport/recovery boundary. |
 | TC-FR11-01 | osac-installer: provider credentials render as Secret references | Helm chart contract/render; `[DEV]` story not created | Proposed chart assertions; `make helm-validate` (`osac-installer/`) | Chart schema/templates render for real; no cluster, provider, or Secret value is deployed. Render assertion must verify plaintext credentials are absent. |
@@ -1089,14 +1114,14 @@ The 30 pre-existing OSAC-3784 cases below are retained. Work ownership is a `[DE
 | TC-FR13-01 | osac-metering: expose degraded delivery health | Unit; `[DEV]` story not created | `adapters/`; `make test` (`osac-metering/`) | Health state/metric code real; stuck delivery simulated. A deployed Prometheus scrape/alert boundary is not covered. |
 | TC-FR14-01 | fulfillment-service: normalize cost grouping by service/resource | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OSAC projection and filtering real; provider cost rows faked; no live provider. |
 | TC-FR15-01 | fulfillment-service: preserve nested Project attribution | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Project hierarchy aggregation real; provider rows and resource visibility are fixtures; database/provider omitted. |
-| TC-FR17-01 | fulfillment-service: return latest charges with `asOf` and tenant scope | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Freshness mapping and tenant filter real; provider timestamps/charges faked. |
+| TC-FR17-01 | fulfillment-service: return latest charges with provider freshness metadata and tenant scope | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Freshness mapping and tenant filter real; provider timestamps/charges faked. |
 | TC-FR18-01 | fulfillment-service: restrict historical costs to visible resources/projects | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Historical authorization/filter logic real; provider history faked; no live provider. |
 | TC-FR19-01 | osac-ui: render account status/association and provider-disabled state | Unit; `[DEV]` story not created | Proposed billing page test under `libs/ui-components/src/pages/provider/`; `pnpm test` (`osac-ui/`) | React view real; configured and `NOT_CONFIGURED` status/account API fixtures. Verifies no account/tenant-link request in disabled mode; no browser deployment, Fulfillment Service, or provider. |
 | TC-FR20-01 | fulfillment-service: hourly/monthly estimate using 730 hours | Unit; `[DEV]` story not created | Proposed pricing tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Decimal arithmetic and projection real; rate inputs faked; no M360 evaluator. |
 | TC-FR20-02 | fulfillment-service: preserve non-hourly provider rate unit | Unit; `[DEV]` story not created | Proposed pricing tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Unit normalization real; provider-native unit supplied by fake adapter. |
 | TC-FR20-03 | osac-ui: display estimate freshness and units in launch panel | Unit; `[DEV]` story not created | Proposed launch panel test under `libs/ui-components/src/`; `pnpm test` (`osac-ui/`) | React panel real; estimate API response stubbed. Does not exercise deployed API or provider. |
 | TC-FR21-01 | fulfillment-service: reject launch for inactive linked account | Unit; `[DEV]` story not created | Proposed launch handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Launch gate real; account status fake. Deployed service integration is not yet execution-ready for billing configuration. |
-| TC-FR21-02 | fulfillment-service: reject publish/launch for unresolved coverage | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Gate and resource handler real; missing-rate/formula responses faked. Does not validate the M360 formula inventory. |
+| TC-FR21-02 | fulfillment-service: reject publish/launch for unresolved coverage | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Gate and resource handler real; missing-rate/unsupported-rule responses faked. Does not validate every M360 rate-rule shape. |
 | TC-FR21-03 | fulfillment-service: reject live gate when provider is unavailable | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Live-check decision real; timeout injected at provider interface. Catalog list/get outage behavior is separately covered by TC-FR27-01. |
 | TC-FR22-01 | fulfillment-service/osac-metering: preserve assignment history and existing usage event contract | Unit/contract; `[DEV]` story not created | Proposed assignment tests under `fulfillment-service/internal/` (`ginkgo run -r internal`) and existing adapter contract tests under `osac-metering/adapters/` (`make test`) | Local tests verify assignment intervals, tombstone behavior, current `externalId` synchronization, and the unchanged `tenant_id` event format. They do not exercise live M360 routing; user-confirmed behavior is that M360 uses the current `externalId`, so event-time attribution is not asserted. |
 | TC-FR34-01 | fulfillment-service: operate core catalog/resource APIs without billing | Component integration; `[DEV]` story not created | Fulfillment API suite; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Fulfillment Service and database run for real with no provider adapter or credentials. Verify status, catalog, publish/launch, pricing-input inventory, each provider-dependent route family returning `BILLING_NOT_CONFIGURED`, and absence of provider calls. |
@@ -1131,19 +1156,19 @@ The rows below identify the required tier and boundary for the newly integrated 
 ### Boundary and execution gaps
 
 - A full browser-to-Fulfillment-to-provider pricing journey has no persisted UI E2E suite. The API component-integration target is known, but its billing-provider injection seam is not documented. Owner and follow-up Jira URL are unresolved; create/assign QE work during decomposition.
-- The available public M360 documentation does not establish the prospective catalog evaluator, OSAC-to-provider billable-field mapping, or formula compatibility. Unit tests with provider fakes do not validate those provider boundaries. The owner is the billing/provider integration team; no follow-up Jira ticket or real-provider test command is recorded yet.
+- The available public M360 documentation does not establish every supported rate-rule shape or the OSAC-to-provider billable-field mapping. Unit tests with provider fakes do not validate those provider boundaries. The owner is the billing/provider integration team; no follow-up Jira ticket or real-provider test command is recorded yet.
 - Coverage is checked only for the account in the gated action's context; a globally visible catalog item does not require coverage from every tenant, and each tenant launch uses that tenant's linked account (design §4.3; TC-FR21-02).
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 47 |
+| Total test cases | 48 |
 | Critical | 20 |
-| High | 25 |
+| High | 26 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 45 |
+| Automated | 46 |
 | Manual | 2 |
-| Requirements with test cases | 39 / 40 |
-| Interface changes with test cases | 17 / 17 |
+| Requirements with test cases | 40 / 40 |
+| Interface groups with test cases | 17 / 17 |
