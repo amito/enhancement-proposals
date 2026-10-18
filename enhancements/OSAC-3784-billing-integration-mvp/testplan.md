@@ -3,11 +3,11 @@
 ## Overview
 
 - **Feature:** Combined OSAC-3784 — Billing Integration and OSAC-3793 — Billing Catalog Pricing Integration
-- **Total test cases:** 48
+- **Total test cases:** 49
 - **Requirements covered:** 40 of 40
 - **Interface groups covered:** 17 of 17
 
-FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. Interface rows name the affected service or component; the design's API methods are listed in §4.3 of `03-design.md`. User stories are the source of requirements. Unless a case explicitly says billing is disabled, billing-specific cases assume one provider is configured. The catalog-pricing cases below replace the pre-merge OSAC-3793 test IDs; the original independent testplan is preserved in the backup directory.
+FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. Interface rows name the affected service or component; the design's API methods are listed in §4.3 of `design.md`. User stories are the source of requirements. Unless a case explicitly says billing is disabled, billing-specific cases assume one provider is configured. Draft charges, invoices, and exports remain in the API table but are **not this increment**; those cases are deferred. The catalog-pricing cases below replace the pre-merge OSAC-3793 test IDs; the original independent testplan is preserved in the backup directory.
 
 ## Test Cases
 
@@ -56,30 +56,33 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 ##### Expected Results
 
 - The first request returns the normalized account ID, currency, and `CONNECTED` state after provider verification.
-- The second request returns `FAILED_PRECONDITION/ACCOUNT_ALREADY_LINKED` and leaves both assignments unchanged.
+- The second request returns `FAILED_PRECONDITION/ACCOUNT_ALREADY_BOUND` and leaves both assignments unchanged.
 - The inactive-account request returns `FAILED_PRECONDITION/ACCOUNT_INACTIVE`.
 
-### FR-3: Scope cost, draft-charge, and export results to authorized tenants/projects
+### FR-3: Scope cost results to authorized tenants/projects
 
-#### TC-FR3-01: Filter account-level provider results to the requested tenant and projects
+This increment implements `BillingCosts.List` only. Draft charges, invoices, and exports stay in the API table and are **not this increment**.
+
+#### TC-FR3-01: Filter account-level provider cost results to the requested tenant and projects
 
 | Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| BillingCosts/DraftCharges/BillingInvoices, BillingExports, OPAAuthorization | critical | automated |
+| BillingCosts, OPAAuthorization | critical | automated |
 
 ##### Preconditions
 
-- The provider fake returns records for two tenants and several projects under one provider account.
-- The caller is authorized for only one tenant and one subset of its projects.
+- One billing account is linked to one tenant (1:1). The provider fake returns cost rows for that tenant and several of its projects, plus at least one row whose tenant id belongs to a different tenant.
+- The caller is authorized for only that linked tenant and one subset of its projects.
 
 ##### Steps
 
-1. Request costs, draft charges, and an export for the authorized tenant.
+1. Request costs for the authorized tenant.
 2. Attempt to request another tenant’s results by changing the tenant ID.
 
 ##### Expected Results
 
-- Every returned cost/charge row and export operation contains only records for the authorized tenant and authorized projects.
+- Returned cost rows contain only the authorized tenant and authorized projects.
+- Rows whose tenant id is present and differs from the linked tenant are **dropped**; they are not attributed to the caller.
 - The second request returns `PERMISSION_DENIED`; no provider response containing the other tenant’s rows is returned to the caller.
 
 ### FR-4: Retain deleted-tenant attribution while revoking access
@@ -116,7 +119,7 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Preconditions
 
-- A catalog item contains two billable components; one has a current rate and one has no current rate card.
+- A **tenant-owned** catalog item (`metadata.tenant` is a customer tenant) contains two metered billable components; one has a current rate and one has no current rate card. Shared/system catalog items are not coverage-checked at publish (see TC-FR21-02).
 
 ##### Steps
 
@@ -125,8 +128,8 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Expected Results
 
-- Pricing resolution returns `COVERAGE_GAP` and identifies the uncovered component.
-- Publication returns `FAILED_PRECONDITION/COVERAGE_GAP`; the item remains unpublished.
+- Pricing resolution returns `BILLING_COVERAGE_GAP` and identifies the uncovered component.
+- Publication returns `FAILED_PRECONDITION/BILLING_COVERAGE_GAP`; the item remains unpublished.
 
 #### TC-FR5-02: Block publication for unsupported rate rule or explicit no-price row
 
@@ -145,10 +148,12 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Expected Results
 
-- Resolution reports `COVERAGE_GAP` with an unsupported-rule reason or `NO_PRICE` for the affected component.
+- Resolution reports `BILLING_COVERAGE_GAP` with an unsupported-rule reason or `NO_PRICE` for the affected component.
 - Publication is rejected and no estimate is represented as a complete total.
 
 ### FR-6: Read draft charges without creating provider financial records
+
+**Deferred — not this increment.** `DraftCharges.List` remains in `design.md` §4.3 for a later slice.
 
 #### TC-FR6-01: Return a stable draft-charge view for repeated reads
 
@@ -171,6 +176,8 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 - The provider fake records zero create or mutate requests.
 
 ### FR-7: Export tenant-scoped charges to an external payment system
+
+**Deferred — not this increment.** `BillingExports.Create` / `Get` remain in `design.md` §4.3 for a later slice.
 
 #### TC-FR7-01: Make charge export tenant-scoped and idempotent
 
@@ -206,7 +213,7 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Steps
 
-1. Call account link, provider switch, export, and audit-list methods with that token.
+1. Call account-link methods with that token. Do not call a provider-switch API (unsupported this milestone). Export and audit-list methods are not this increment.
 
 ##### Expected Results
 
@@ -239,26 +246,45 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ### FR-10: Keep resource lifecycle available and recover usage across provider outages
 
-#### TC-FR10-01: Preserve resource operations and queued usage during provider outage
+#### TC-FR10-01: Preserve resource operations during provider outage
 
 | Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| MeteringUsage, ProviderHealth | critical | automated |
+| Catalog and resource APIs, PricingQueries | critical | automated |
 
 ##### Preconditions
 
-- A tenant has running resources and the provider endpoint becomes unavailable.
+- A tenant has running resources, a connected assignment, and the live provider endpoint times out (pricing circuit open or 5xx).
 
 ##### Steps
 
 1. Stop or delete an existing resource.
-2. Publish a new billing-enabled item and launch a new resource.
-3. Generate usage during the outage, then restore the provider.
+2. Publish a new **tenant-owned** billing-enabled catalog item.
+3. Launch a new resource from an already published item.
 
 ##### Expected Results
 
 - Existing resource stop/delete requests complete through the normal lifecycle API.
-- New billing-enabled publication and launch return `UNAVAILABLE/BILLING_PROVIDER_UNAVAILABLE`.
+- Tenant-owned publication returns `UNAVAILABLE/BILLING_COVERAGE_UNAVAILABLE` (fail closed). Shared/system publish is skipped and is not asserted here.
+- Launch is **allowed**. A coverage gap still blocks (TC-FR21-02); classified provider unavailability does not.
+
+#### TC-FR10-02: Preserve queued usage during provider outage and deliver after recovery
+
+| Interface / component | Priority | Automation |
+|-----------------|----------|------------|
+| MeteringUsage | critical | automated |
+
+##### Preconditions
+
+- Usage events are generated while the provider endpoint is unavailable, then the provider is restored.
+
+##### Steps
+
+1. Generate usage during the outage.
+2. Restore the provider.
+
+##### Expected Results
+
 - The usage event remains queued or retryable and is accepted once after recovery, with no duplicate provider event.
 
 ### FR-11: Install provider credentials through non-plaintext Secret references
@@ -282,29 +308,27 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 - Rendered non-Secret resources contain the Secret name/key reference only.
 - The credential value appears only in the Secret-backed mount/environment source.
 
-### FR-12: Switch the provider at a billing-period boundary without replaying old usage
+### FR-12: Provider switch is unsupported this milestone
 
-#### TC-FR12-01: Route events on either side of the provider switch boundary
+#### TC-FR12-01: Reject dual-provider configuration; keep a single adapter
 
 | Interface / component | Priority | Automation |
 |-----------------|----------|------------|
-| MeteringUsage, ProviderConfig | high | automated |
+| ProviderConfig, MeteringUsage | high | automated |
 
 ##### Preconditions
 
-- M360 is configured before the boundary and another fake adapter is configured for after it.
-- Usage events exist immediately before and after the boundary.
+- The deployment is configured with one billing provider URL and Secret (M360).
 
 ##### Steps
 
-1. Apply a provider switch scheduled at the next period boundary.
-2. Submit the pre-boundary and post-boundary events.
+1. Inspect the configured provider.
+2. Submit usage events.
 
 ##### Expected Results
 
-- The pre-boundary event is delivered only to M360.
-- The post-boundary event is delivered only to the new provider.
-- No pre-boundary event is replayed to the new provider.
+- Only one provider adapter is active. There is no period-boundary dual-adapter window and no replay into a second provider.
+- Changing configuration away from M360 is a new config, not a supported migrate in this design. Do not assert pre-boundary events to M360 and post-boundary events to another provider.
 
 ### FR-13: Show unhealthy status when usage is not flowing
 
@@ -368,6 +392,8 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 - The response contains separate parent and child Project identifiers, the parent-child relationship, and totals that equal the returned underlying rows.
 
 ### FR-16: View past invoices and itemized charge breakdowns
+
+**Deferred — not this increment.** `BillingInvoices.List` / `Get` remain in `design.md` §4.3 so a later slice does not invent a second contract. This case is not execution-ready for the current increment.
 
 #### TC-FR16-01: List and read invoices for the authorized tenant
 
@@ -543,7 +569,7 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 - Both new operations return `FAILED_PRECONDITION/ACCOUNT_INACTIVE`.
 - Existing resource get/stop/delete operations remain available.
 
-#### TC-FR21-02: Reject publish and launch for unresolved component coverage
+#### TC-FR21-02: Reject tenant-owned publish and launch for unresolved coverage; skip shared/system publish
 
 | Interface / component | Priority | Automation |
 |-----------------|----------|------------|
@@ -551,19 +577,23 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Preconditions
 
-- A globally visible item has a coverage gap for tenant A's linked account and complete coverage for tenant B's linked account. The operation context identifies the account used for the gate.
+- A tenant-owned catalog item has a metered coverage gap for tenant A's linked account.
+- A catalog item whose `metadata.tenant` is the reserved `shared` (or `system`) tenant has the same gap relative to tenant A's account.
+- Tenant B's linked account has complete coverage for the item tenant B will launch.
 
 ##### Steps
 
-1. Attempt publication in tenant A's account context.
-2. Attempt a launch as tenant B.
+1. Attempt publication of the tenant-owned item as tenant A.
+2. Attempt publication of the shared/system item.
+3. Attempt a launch as tenant A (gap) and as tenant B (covered).
 
 ##### Expected Results
 
-- Publication checks tenant A's account and returns `FAILED_PRECONDITION/COVERAGE_GAP` with the component ID and safe reason; it does not check every tenant who may see the global item.
-- Tenant B's launch checks only tenant B's linked account and succeeds because that account has coverage.
+- Tenant-owned publication returns `FAILED_PRECONDITION/BILLING_COVERAGE_GAP` with the component ID and safe reason.
+- Shared/system publication is **not** coverage-checked and succeeds if ordinary catalog validation passes. Do not resolve a default service rate card in order to publish those items.
+- Tenant A's launch returns `FAILED_PRECONDITION/BILLING_COVERAGE_GAP`. Tenant B's launch checks only tenant B's linked account and succeeds.
 
-#### TC-FR21-03: Reject a live gate check when the provider is unavailable
+#### TC-FR21-03: Allow launch and fail tenant-owned publish when the provider is unavailable
 
 | Interface / component | Priority | Automation |
 |-----------------|----------|------------|
@@ -571,16 +601,17 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Preconditions
 
-- Account status was previously active, but the live provider endpoint now times out.
+- Account status was previously active, but the live provider endpoint now times out (classified `BILLING_COVERAGE_UNAVAILABLE`).
 
 ##### Steps
 
-1. Submit a publish request.
+1. Submit a tenant-owned publish request.
 2. Submit a launch request.
 
 ##### Expected Results
 
-- Both requests return `UNAVAILABLE/BILLING_PROVIDER_UNAVAILABLE`.
+- Tenant-owned publish returns `UNAVAILABLE/BILLING_COVERAGE_UNAVAILABLE`.
+- Launch is **allowed**. A `STALE` catalog price is not treated as coverage.
 - The prior status may be shown as stale in the account view but is not accepted as a live price check.
 
 ### FR-22: Preserve assignment history through reassignment, suspension, and deletion
@@ -676,9 +707,11 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 - Each tenant receives only the price resolved for its own linked account and effective plan.
 - The request does not infer OSAC visibility from provider account membership. Shared-account behavior remains future scope.
 
-### FR-26: Include metered and non-metered components in account base currency
+### FR-26: Include metered components in account base currency
 
-#### TC-FR26-01: Pricing includes all returned components and currency
+Non-metered add-ons, licenses, and setup fees are **deferred**. This increment covers metered billable dimensions only.
+
+#### TC-FR26-01: Pricing includes returned metered components and currency
 
 | Interface / component | Priority | Automation |
 |-----------------|----------|------------|
@@ -686,7 +719,7 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Preconditions
 
-- The provider fake returns one metered component and one non-metered component in the account base currency.
+- The provider fake returns metered components in the account base currency. Non-metered rows, if present, are out of this increment and must not be required for coverage.
 
 ##### Steps
 
@@ -695,7 +728,8 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Expected Results
 
-- The response contains the account base currency and both components with their amount, unit, and description; no returned component is silently dropped.
+- The response contains the account base currency and each returned **metered** component with amount, unit, and description; no returned metered component is silently dropped.
+- A currency mismatch between a provider amount and the account `base_currency` fails the gate or returns `UNAVAILABLE` pricing; the amount is not displayed as the account currency.
 
 ### FR-27: Represent unavailable pricing separately from incomplete coverage
 
@@ -1083,9 +1117,11 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ### Requirement Coverage Gaps
 
-- - **FR-9 audit implementation:** TC-FR9-01 captures the required outcome, but the audit model, storage, retention, authorization, and read surface remain open in design §9.3. The case is not execution-ready, and no follow-up Jira story exists yet.
+- **FR-9 audit implementation:** TC-FR9-01 captures the required outcome, but the audit model, storage, retention, authorization, and read surface remain deferred with the platform audit feature in design §9.3. The case is not execution-ready, and no follow-up Jira story exists yet.
+- **FR-6, FR-7, FR-16:** Draft charges, exports, and invoice reads remain in the API table and are **not this increment**. Matrix rows are marked deferred.
+- **FR-12:** Provider switch is unsupported this milestone; TC-FR12-01 asserts a single adapter, not a dual-adapter cutover.
 
-All 40 grouped requirements have at least one behavioral test case. The audit case remains unassigned and not execution-ready until the audit design is decided.
+All 40 grouped requirements have at least one behavioral test case. Audit, invoice, draft-charge, and export cases remain unassigned for this increment.
 
 ### Interface Coverage Gaps
 
@@ -1099,30 +1135,31 @@ The 30 pre-existing OSAC-3784 cases below are retained. Work ownership is a `[DE
 |---|---|---|---|---|
 | TC-FR1-01 | osac-metering: retry and duplicate-safe usage submission | Unit; `[DEV]` story not created | `adapters/`; `make test` (`osac-metering/`) | Adapter/runner code real; provider endpoint faked. Does not run Kafka transport; Kafka integration suite is unavailable under OSAC-4846. |
 | TC-FR2-01 | fulfillment-service: account association and 1:1 conflict validation | Component integration; `[DEV]` story not created | `it/`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Fulfillment Service and database real. Provider account discovery/link verification must be faked; test injection seam is not documented, so this case is not execution-ready until that seam is added. |
-| TC-FR3-01 | fulfillment-service: tenant/project-filtered billing reads | Unit; `[DEV]` story not created | Proposed billing server tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OSAC filters and response projection real; provider account-level rows faked; no live provider. |
+| TC-FR3-01 | fulfillment-service: tenant/project-filtered `BillingCosts.List` | Unit; `[DEV]` story not created | Proposed billing server tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OSAC filters and response projection real; provider cost rows faked for one linked tenant; foreign tenant ids dropped. Draft/invoice/export not this increment. |
 | TC-FR4-01 | fulfillment-service: deleted-tenant billing tombstone persistence | Component integration; `[DEV]` story not created | Proposed billing persistence test under `it/`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Deployed service and database real; provider cleanup/retention faked. No provider deletion boundary is exercised. |
 | TC-FR5-01 | fulfillment-service: block publication for a missing rate | Unit; `[DEV]` story not created | Proposed pricing/publish tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Publication handler and gate real; provider rate lookup faked. Does not prove M360 rate coverage. |
 | TC-FR5-02 | fulfillment-service: block unsupported rate rule or explicit no-price row | Unit; `[DEV]` story not created | Proposed pricing/publish tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Rate-rule matching and gate real; an unsupported provider rate shape is faked. Supported shapes require provider validation. |
-| TC-FR6-01 | fulfillment-service: stable, read-only draft-charge view | Unit; `[DEV]` story not created | Proposed billing server tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | API projection real; provider response faked and repeated; provider-side non-mutation is not proven by a fake. |
-| TC-FR7-01 | fulfillment-service: tenant-scoped idempotent charge export | Unit; `[DEV]` story not created | Proposed export handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Authorization, tenant filtering, and idempotency logic real; payment/provider export faked. Real provider scoping is an open contract gap. |
+| TC-FR6-01 | fulfillment-service: stable, read-only draft-charge view | Deferred — not this increment | — | `DraftCharges.List` kept in `design.md` §4.3; do not implement or invent a command for this slice. |
+| TC-FR7-01 | fulfillment-service: tenant-scoped idempotent charge export | Deferred — not this increment | — | `BillingExports.Create` / `Get` kept in `design.md` §4.3; do not implement for this slice. |
 | TC-FR8-01 | fulfillment-service: billing mutation authorization | Unit; `[DEV]` story not created | Proposed auth/policy tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OPA/application policy and request path real in process; identities and provider are test fixtures; no live IdP. |
 | TC-FR9-01 | OSAC audit facility: record billing actions | Tier/location/owner unresolved pending design §9.3 | No test location or command selected until the audit source, storage, and read contract are defined | Test must exercise the selected durable audit boundary. Provider actions can be faked; current design does not establish a billing-specific table or audit API. No follow-up Jira story is assigned. |
-| TC-FR10-01 | fulfillment-service: resource APIs remain available during provider outage | Component integration; `[DEV]` story not created | Proposed API case under `it/`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Deployed service/database real; billing provider failure injected. Metering queue recovery is a separate required boundary and is not covered by this row. |
-| TC-FR10-01 | osac-metering: queued usage is delivered after provider recovery | Component integration; owner/ticket unresolved | No runnable suite/command is documented; OSAC-4846 tracks unavailable Kafka integration infrastructure | Kafka, adapter restart, offsets, and recovery must run for real with a controllable provider. Unit tests with a fake do not prove the transport/recovery boundary. |
+| TC-FR10-01 | fulfillment-service: stop/delete succeed and launch is allowed during provider outage; tenant-owned publish fails closed | Component integration; `[DEV]` story not created | Proposed API case under `it/`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Deployed service/database real; billing provider failure injected. Metering queue recovery is TC-FR10-02. |
+| TC-FR10-02 | osac-metering: queued usage is delivered after provider recovery | Component integration; owner/ticket unresolved | No runnable suite/command is documented; OSAC-4846 tracks unavailable Kafka integration infrastructure | Kafka, adapter restart, offsets, and recovery must run for real with a controllable provider. Unit tests with a fake do not prove the transport/recovery boundary. |
 | TC-FR11-01 | osac-installer: provider credentials render as Secret references | Helm chart contract/render; `[DEV]` story not created | Proposed chart assertions; `make helm-validate` (`osac-installer/`) | Chart schema/templates render for real; no cluster, provider, or Secret value is deployed. Render assertion must verify plaintext credentials are absent. |
-| TC-FR12-01 | osac-metering: route events across the provider switch boundary | Unit; `[DEV]` story not created | `adapters/`; `make test` (`osac-metering/`) | Boundary-selection code real; event timestamps and adapter responses are fixtures. Kafka ordering/offset behavior needs unavailable component-integration coverage under OSAC-4846. |
+| TC-FR12-01 | osac-installer / osac-metering: single configured provider; switch unsupported | Unit; `[DEV]` story not created | Chart/config and adapter tests; `make helm-validate` (`osac-installer/`) and `make test` (`osac-metering/`) | Assert one provider URL/Secret and one adapter. Do not test a period-boundary dual-adapter cutover. |
 | TC-FR13-01 | osac-metering: expose degraded delivery health | Unit; `[DEV]` story not created | `adapters/`; `make test` (`osac-metering/`) | Health state/metric code real; stuck delivery simulated. A deployed Prometheus scrape/alert boundary is not covered. |
 | TC-FR14-01 | fulfillment-service: normalize cost grouping by service/resource | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OSAC projection and filtering real; provider cost rows faked; no live provider. |
 | TC-FR15-01 | fulfillment-service: preserve nested Project attribution | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Project hierarchy aggregation real; provider rows and resource visibility are fixtures; database/provider omitted. |
-| TC-FR17-01 | fulfillment-service: return latest charges with provider freshness metadata and tenant scope | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Freshness mapping and tenant filter real; provider timestamps/charges faked. |
+| TC-FR16-01 | fulfillment-service: list and read invoices for the authorized tenant | Deferred — not this increment | — | `BillingInvoices.List` / `Get` kept in `design.md` §4.3; invoices are not implemented in this slice. |
+| TC-FR17-01 | fulfillment-service: return latest charges with provider freshness metadata and tenant scope | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Freshness mapping and tenant filter real; provider timestamps/charges faked. `as_of` is OSAC fetch time. |
 | TC-FR18-01 | fulfillment-service: restrict historical costs to visible resources/projects | Unit; `[DEV]` story not created | Proposed cost-query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Historical authorization/filter logic real; provider history faked; no live provider. |
 | TC-FR19-01 | osac-ui: render account status/association and provider-disabled state | Unit; `[DEV]` story not created | Proposed billing page test under `libs/ui-components/src/pages/provider/`; `pnpm test` (`osac-ui/`) | React view real; configured and `NOT_CONFIGURED` status/account API fixtures. Verifies no account/tenant-link request in disabled mode; no browser deployment, Fulfillment Service, or provider. |
 | TC-FR20-01 | fulfillment-service: hourly/monthly estimate using 730 hours | Unit; `[DEV]` story not created | Proposed pricing tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Decimal arithmetic and projection real; rate inputs faked; no M360 evaluator. |
 | TC-FR20-02 | fulfillment-service: preserve non-hourly provider rate unit | Unit; `[DEV]` story not created | Proposed pricing tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Unit normalization real; provider-native unit supplied by fake adapter. |
 | TC-FR20-03 | osac-ui: display estimate freshness and units in launch panel | Unit; `[DEV]` story not created | Proposed launch panel test under `libs/ui-components/src/`; `pnpm test` (`osac-ui/`) | React panel real; estimate API response stubbed. Does not exercise deployed API or provider. |
 | TC-FR21-01 | fulfillment-service: reject launch for inactive linked account | Unit; `[DEV]` story not created | Proposed launch handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Launch gate real; account status fake. Deployed service integration is not yet execution-ready for billing configuration. |
-| TC-FR21-02 | fulfillment-service: reject publish/launch for unresolved coverage | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Gate and resource handler real; missing-rate/unsupported-rule responses faked. Does not validate every M360 rate-rule shape. |
-| TC-FR21-03 | fulfillment-service: reject live gate when provider is unavailable | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Live-check decision real; timeout injected at provider interface. Catalog list/get outage behavior is separately covered by TC-FR27-01. |
+| TC-FR21-02 | fulfillment-service: reject tenant-owned publish/launch for unresolved coverage; skip shared/system publish | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Gate and resource handler real; missing-rate/unsupported-rule responses faked. Shared/system items must not be coverage-checked at publish. |
+| TC-FR21-03 | fulfillment-service: allow launch and fail tenant-owned publish when provider is unavailable | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Live-check decision real; timeout injected at provider interface. Launch allowed; tenant-owned publish fail-closed. Catalog list/get outage behavior is separately covered by TC-FR27-01. |
 | TC-FR22-01 | fulfillment-service/osac-metering: preserve assignment history and existing usage event contract | Unit/contract; `[DEV]` story not created | Proposed assignment tests under `fulfillment-service/internal/` (`ginkgo run -r internal`) and existing adapter contract tests under `osac-metering/adapters/` (`make test`) | Local tests verify assignment intervals, tombstone behavior, current `externalId` synchronization, and the unchanged `tenant_id` event format. They do not exercise live M360 routing; user-confirmed behavior is that M360 uses the current `externalId`, so event-time attribution is not asserted. |
 | TC-FR34-01 | fulfillment-service: operate core catalog/resource APIs without billing | Component integration; `[DEV]` story not created | Fulfillment API suite; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Fulfillment Service and database run for real with no provider adapter or credentials. Verify status, catalog, publish/launch, pricing-input inventory, each provider-dependent route family returning `BILLING_NOT_CONFIGURED`, and absence of provider calls. |
 | TC-NFR1-01 | fulfillment-service: authorize tenant/project before provider calls | Unit; `[DEV]` story not created | Proposed auth/query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OSAC auth/filter path and provider-call spy real in process; identity and provider responses faked. |
@@ -1139,7 +1176,7 @@ The rows below identify the required tier and boundary for the newly integrated 
 | TC-FR23-01 | fulfillment-service: VM catalog price enrichment | Unit; `[DEV] OSAC-3784/OSAC-3793 implementation story` (not created) | `internal/servers/`; `ginkgo run internal/servers` (`fulfillment-service/`) | Real handler and normalization code; provider response faked through the billing pricing interface; database and M360 omitted. |
 | TC-FR24-01 | fulfillment-service: cluster catalog price enrichment | Unit; `[DEV] OSAC-3784/OSAC-3793 implementation story` (not created) | `internal/servers/`; `ginkgo run internal/servers` (`fulfillment-service/`) | Real handler and cluster-field mapping code; provider response faked; database and M360 omitted. |
 | TC-FR25-01 | fulfillment-service: resolve against the authenticated tenant's linked account | Unit; `[DEV] OSAC-3784/OSAC-3793 implementation story` (not created) | `internal/servers/`; `ginkgo run internal/servers` (`fulfillment-service/`) | Real tenant/account selection logic; two distinct tenant accounts and provider plans faked; shared-account behavior is outside the current 1:1 scope. |
-| TC-FR26-01 | fulfillment-service: normalize metered/non-metered components and currency | Unit; `[DEV] OSAC-3784/OSAC-3793 implementation story` (not created) | `internal/servers/`; `ginkgo run internal/servers` (`fulfillment-service/`) | Real response mapping; provider component rows faked; no live provider or database. |
+| TC-FR26-01 | fulfillment-service: normalize metered components and currency | Unit; `[DEV] OSAC-3784/OSAC-3793 implementation story` (not created) | `internal/servers/`; `ginkgo run internal/servers` (`fulfillment-service/`) | Real response mapping; metered provider component rows faked. Non-metered add-ons are deferred. Currency mismatch fails rather than converting. |
 | TC-FR27-01 | fulfillment-service: contain provider timeout on catalog reads | Unit; `[DEV] OSAC-3784/OSAC-3793 implementation story` (not created) | `internal/servers/`; `ginkgo run internal/servers` (`fulfillment-service/`) | Real catalog response behavior; timeout injected at the provider boundary; deployment and M360 omitted. |
 | TC-FR27-02 | fulfillment-service: distinguish missing component coverage | Unit; `[DEV] OSAC-3784/OSAC-3793 implementation story` (not created) | `internal/servers/`; `ginkgo run internal/servers` (`fulfillment-service/`) | Real aggregate pricing status; missing-rate response faked; live provider omitted. TC-FR21-02 separately covers publish/launch rejection. |
 | TC-FR28-01 | fulfillment-service CLI: human and machine-readable catalog output | Component integration; `[DEV] OSAC-3784/OSAC-3793 implementation story` (not created) | `it/`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Deployed Fulfillment Service, database, and CLI run for real. A configurable billing pricing fake is a prerequisite not currently established by the suite; M360 is not run. The command is defined, but this scenario is not execution-ready until that test seam exists. |
