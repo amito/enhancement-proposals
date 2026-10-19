@@ -231,7 +231,7 @@ This increment implements `BillingCosts.List` only. Draft charges, invoices, and
 ##### Preconditions
 
 - A Cloud Provider Admin can link an account and request an export.
-- The audit model and authorized read surface remain undecided per design §9.3. This case is a behavioral placeholder and is not execution-ready.
+- Billing audit is out of this design (see `design.md` §2.2). This case is a behavioral placeholder for the platform audit feature and is not execution-ready.
 
 ##### Steps
 
@@ -369,7 +369,7 @@ This increment implements `BillingCosts.List` only. Draft charges, invoices, and
 
 ##### Expected Results
 
-- The response contains only the requested tenant and period, with separate VMaaS/CaaS groups, currency, and freshness metadata selected under design §9.2.
+- The response contains only the requested tenant and period, with separate VMaaS/CaaS groups, currency, and `as_of` as the OSAC fetch time (`design.md` §4.3).
 
 ### FR-15: Aggregate costs by nested Project hierarchy
 
@@ -436,7 +436,7 @@ This increment implements `BillingCosts.List` only. Draft charges, invoices, and
 
 ##### Expected Results
 
-- The response includes the freshness metadata selected under design §9.2 and authorized rows only.
+- The response includes `as_of` as the OSAC fetch time (`design.md` §4.3) and authorized rows only.
 - No rated-transaction or account-balance view is rendered in the first billing UI slice.
 
 ### FR-18: Return cost history for accessible resources and Projects
@@ -1117,7 +1117,7 @@ Non-metered add-ons, licenses, and setup fees are **deferred**. This increment c
 
 ### Requirement Coverage Gaps
 
-- **FR-9 audit implementation:** TC-FR9-01 captures the required outcome, but the audit model, storage, retention, authorization, and read surface remain deferred with the platform audit feature in design §9.3. The case is not execution-ready, and no follow-up Jira story exists yet.
+- **FR-9 audit implementation:** TC-FR9-01 captures the required outcome, but billing audit is out of this design (`design.md` §2.2). The case is not execution-ready, and no follow-up Jira story exists yet.
 - **FR-6, FR-7, FR-16:** Draft charges, exports, and invoice reads remain in the API table and are **not this increment**. Matrix rows are marked deferred.
 - **FR-12:** Provider switch is unsupported this milestone; TC-FR12-01 asserts a single adapter, not a dual-adapter cutover.
 
@@ -1142,7 +1142,7 @@ The 30 pre-existing OSAC-3784 cases below are retained. Work ownership is a `[DE
 | TC-FR6-01 | fulfillment-service: stable, read-only draft-charge view | Deferred — not this increment | — | `DraftCharges.List` kept in `design.md` §4.3; do not implement or invent a command for this slice. |
 | TC-FR7-01 | fulfillment-service: tenant-scoped idempotent charge export | Deferred — not this increment | — | `BillingExports.Create` / `Get` kept in `design.md` §4.3; do not implement for this slice. |
 | TC-FR8-01 | fulfillment-service: billing mutation authorization | Unit; `[DEV]` story not created | Proposed auth/policy tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OPA/application policy and request path real in process; identities and provider are test fixtures; no live IdP. |
-| TC-FR9-01 | OSAC audit facility: record billing actions | Tier/location/owner unresolved pending design §9.3 | No test location or command selected until the audit source, storage, and read contract are defined | Test must exercise the selected durable audit boundary. Provider actions can be faked; current design does not establish a billing-specific table or audit API. No follow-up Jira story is assigned. |
+| TC-FR9-01 | OSAC audit facility: record billing actions | Deferred — billing audit is out of this design | — | No billing audit table, retention, authorization, or read surface in this EP. Platform audit feature owns the contract. |
 | TC-FR10-01 | fulfillment-service: stop/delete succeed and launch is allowed during provider outage; tenant-owned publish fails closed | Component integration; `[DEV]` story not created | Proposed API case under `it/`; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Deployed service/database real; billing provider failure injected. Metering queue recovery is TC-FR10-02. |
 | TC-FR10-02 | osac-metering: queued usage is delivered after provider recovery | Component integration; owner/ticket unresolved | No runnable suite/command is documented; OSAC-4846 tracks unavailable Kafka integration infrastructure | Kafka, adapter restart, offsets, and recovery must run for real with a controllable provider. Unit tests with a fake do not prove the transport/recovery boundary. |
 | TC-FR11-01 | osac-installer: provider credentials render as Secret references | Helm chart contract/render; `[DEV]` story not created | Proposed chart assertions; `make helm-validate` (`osac-installer/`) | Chart schema/templates render for real; no cluster, provider, or Secret value is deployed. Render assertion must verify plaintext credentials are absent. |

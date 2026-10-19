@@ -2,7 +2,7 @@
 title: osac-billing-integration
 authors: amoren@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-18
+last-updated: 2026-10-19
 tracking-link: https://redhat.atlassian.net/browse/OSAC-3784
 prd: https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-3784-billing-integration-mvp/prd.md
 see-also: https://redhat.atlassian.net/browse/OSAC-3793
@@ -47,9 +47,9 @@ OSAC gets catalog prices and rate cards from its configured billing provider and
 - Estimate one-time charges or claim that prospective estimates are provider-rated actual charges.
 - Convert provider prices between currencies. If a provider amount's currency differs from the linked account `base_currency`, fail the gate or return `UNAVAILABLE` pricing; do not display that amount as the account currency.
 - Apply an additional billing-rounding rule to provider amounts. Preserve decimal values; UI formatting to 2–3 fractional digits is sufficient, and configurable display precision is a nice-to-have.
-- Price or gate BMaaS (OSAC-3795).
+- Price or gate BMaaS ([OSAC-3795](https://redhat.atlassian.net/browse/OSAC-3795)).
 - Declare or gate non-metered add-ons, licenses, or setup fees. Coverage and catalog inventory in this increment are **metered** billable dimensions only.
-- Implement OSAC-side billing audit storage or an audit List API. Those PRD stories move with the platform audit feature (§9.3) and are not closed here.
+- Implement OSAC-side billing audit storage or an audit List API. Provider install, tenant-to-account linking, and later draft-invoice read/export still have PRD audit stories; those move with the platform audit feature. This design does not select storage, taxonomy, retention, authorization, or a read surface, and does not specify a billing-specific audit table.
 - Share one billing account across tenants (PRD 1:N).
 
 ## 2.3 Assumptions
@@ -60,11 +60,11 @@ OSAC gets catalog prices and rate cards from its configured billing provider and
 
 # 3. Motivation / Background
 
-The billing UI currently reads M360-shaped data directly and calculates launch estimates locally. That couples OSAC clients to M360 account identifiers and rate-card details, and it cannot enforce the same policy for API, CLI, catalog publication, and launch.
+OSAC already tracks how much VMaaS and CaaS tenants use. It still cannot bill that usage. It cannot link a tenant to a billing account, show a price or a running cost, or stop a new offering or launch when a rate is missing. Catalog items have no prices, so tenant users either provision first and find out later, or they look the price up outside OSAC.
 
-The backend already has an M360 usage adapter in `osac-metering`, but no account association model or billing query API. Fulfillment-service is the public API, persistence, and authorization boundary; the metering adapters own downstream provider usage submission. The design adds control/query operations to fulfillment-service while keeping usage delivery in osac-metering.
+The billing system (M360 first) still owns rates and invoices. OSAC has to find the accounts, attach each tenant, send usage, and show the prices and costs that system returns. OSAC's own UI, API, and CLI should not have to speak the billing vendor's language.
 
-The reviewed M360 documentation describes account status, service rates, and contract exceptions, but no prospective quote endpoint. OSAC therefore matches documented provider rate rules to billable components and presents a clearly labeled estimate; M360 remains the source of truth for actual rating and charges. OSAC does not interpret arbitrary provider formula text. Any 730-hour projection is labeled as an OSAC estimate, separate from provider-supplied rates. The UI does not match rate rules or sum components locally.
+Billing can be left off: if no billing system is installed, browsing the catalog and creating resources must keep working.
 
 # 4. Design
 
@@ -146,11 +146,11 @@ Stores each time-bounded association between an OSAC tenant and a billing accoun
 
 For this milestone, enforce at most one active assignment per tenant and at most one active tenant per billing account. Close the old assignment and create its replacement in one database transaction. Assignment **history** stays time-versioned. A future 1:N product model is out of this design; relaxing the account-side uniqueness check would not produce shared-account attribution because M360 has one `externalId` per account.
 
-Do not add an assignment audit-correlation field in this design. Billing audit is deferred with the platform audit feature in §9.3.
+Do not add an assignment audit-correlation field in this design. Billing audit is not part of this EP: no billing-specific audit table, event taxonomy, retention rule, authorization model, or List API is specified here. Those PRD stories remain with the platform audit feature.
 
 ### API schema boundary
 
-Fulfillment-service protos define the API contract; REST is generated through CleanAPI. This design names services and methods without listing every proto field or field number. Tenant assignments follow OSAC `Metadata`/`Spec`/`Status` conventions and reconcile provider state; account, catalog, rate-card, and cost read models may be flat. Proto and JSON field names use `snake_case`; enums use a type-prefixed `*_UNSPECIFIED = 0` value. Use `buf.validate` for required identifiers, currencies, and time ranges. The methods listed in §4.3 are the intended CleanAPI surface; reconciliation signals and provider-native references remain private. Audit schema remains deferred under §9.3.
+Fulfillment-service protos define the API contract; REST is generated through CleanAPI. This design names services and methods without listing every proto field or field number. Tenant assignments follow OSAC `Metadata`/`Spec`/`Status` conventions and reconcile provider state; account, catalog, rate-card, and cost read models may be flat. Proto and JSON field names use `snake_case`; enums use a type-prefixed `*_UNSPECIFIED = 0` value. Use `buf.validate` for required identifiers, currencies, and time ranges. The methods listed in §4.3 are the intended CleanAPI surface; reconciliation signals and provider-native references remain private. There is no billing audit schema in this contract.
 
 Use a durable reconciliation record for provider-link updates. Before setting M360's `externalId`, read the account: an existing value equal to this tenant is idempotent success; any other non-empty value fails with `ACCOUNT_ALREADY_BOUND` and is never overwritten. Use conditional update if supported. Otherwise, leave the assignment `PENDING` until a read-back verifies the value, and reconcile races or lost updates. Mark it `CONNECTED` only after verification. Only Cloud Provider Admins may create or replace links; `tenant_id` is not an authorization credential. Account reassignment closes the old effective interval and creates the new one at the operation's effective time. Tenant deletion revokes normal tenant access immediately and retains the association as a read-only tombstone until provider retention permits cleanup. Suspension does not change the account association or provider account status. Historical OSAC assignments support history only; M360 uses the current `externalId` mapping for usage events and the current event format cannot target the historical account.
 
@@ -221,9 +221,9 @@ Catalog pricing distinguishes current, stale, and unavailable results. A stale r
 }
 ```
 
-An `UNAVAILABLE` result has no amount. `as_of` is the time OSAC received a successful provider response. Set it only when catalog pricing `status=CURRENT` or a cost read succeeded now. `STALE` catalog prices omit `as_of`. If the provider supplies `fromDate` / `toDate`, expose them as an effective period, separate from `as_of`.
+An `UNAVAILABLE` result has no amount. M360 has no observation timestamp to copy. `as_of` is the time OSAC received a successful provider response. Set it only when catalog pricing `status=CURRENT` or a cost read succeeded now. `STALE` catalog prices omit `as_of`. If the provider supplies `fromDate` / `toDate`, expose them as an effective period, separate from `as_of`.
 
-Provider capabilities for pricing and costs are reported explicitly. Draft charges, invoices, and exports are unsupported unless a later increment confirms the M360 contract. Never imply that an unsupported operation returned an empty successful result. Audit reads are deferred with the platform audit feature in §9.3.
+Provider capabilities for pricing and costs are reported explicitly. Draft charges, invoices, and exports are unsupported unless a later increment confirms the M360 contract. Never imply that an unsupported operation returned an empty successful result. This increment has no billing audit read surface.
 
 ## 4.4 Scalability and Performance
 
@@ -258,11 +258,11 @@ Do not check a default service rate card in order to publish a shared or system 
 - **Billing is not configured:** status returns `NOT_CONFIGURED`; provider-dependent operations return `FAILED_PRECONDITION/BILLING_NOT_CONFIGURED`. Catalog reads omit pricing, and billing-specific publish/launch checks are skipped. Normal OSAC checks remain in force.
 - **Provider is unavailable or a catalog timeout expires:** return catalog data. A cached amount may be shown with `status=STALE`; otherwise return `status=UNAVAILABLE` with no amount. Apply the table above for publish vs launch.
 - **Rate coverage is missing:** return `BILLING_COVERAGE_GAP`; never turn a missing rate into zero. Contract lookup failure or an unexpected ambiguous result is an error, never a fallback to the default card.
-- **Account is inactive or unknown:** reject a new assignment. For an existing assignment, show the state and block new billing-gated publication/launch. Do not suspend or stop existing resources.
+- **Account is inactive or unknown:** reject a new assignment. For an existing assignment, show the state and block new billing-gated publication/launch. Do not suspend or stop existing resources. If billing is still configured, **keep submitting usage** for those resources. Rates are not required to emit. M360 rating after deactivation is undocumented; provider rejection handling stays the current metering adapter retry/DLQ policy. This design does not specify park-and-replay for an inactive-account 4xx.
 - **M360 account link conflicts:** if `externalId` is already this tenant, treat the link as idempotent success. If it contains another value, fail with `ACCOUNT_ALREADY_BOUND`; never overwrite it. Keep the assignment `PENDING` until a provider read-back verifies this tenant. Reconcile conditional-update races without marking the link connected prematurely. `PENDING` blocks launch (`BILLING_ACCOUNT_UNAVAILABLE`).
 - **Provider operation is unsupported:** report the capability in provider status and return `UNIMPLEMENTED/PROVIDER_CAPABILITY_UNSUPPORTED`, not empty data or simulated success.
 - **Unauthorized tenant preview or hidden catalog item:** reject before calling the provider and disclose neither the item nor its price.
-- **Usage submission:** if billing is configured, **keep submitting usage**. Rates are not required to emit. Deactivating an M360 account does not make OSAC stop emission. Existing resources keep running. Provider rejection handling stays the current metering adapter retry/DLQ policy. This design does not specify park-and-replay for an inactive-account 4xx.
+- **Usage submission:** if billing is configured, **keep submitting usage**. Rates are not required to emit. Deactivating an M360 account does not stop emission; see the inactive-account bullet.
 - **Usage arrives after reassignment:** M360 applies the current `externalId` mapping. The design does not guarantee event-time account attribution for delayed events; retain OSAC assignment history.
 - **Provider switch is unsupported this milestone.** One provider URL and Secret. Changing configuration away from M360 is a new config, not a period-boundary migrate. There is no dual-adapter window and no replay into a second provider. In-flight Kafka/DLQ is not drained by this design.
 - **Export retries:** not this increment. If later implemented, use a stable idempotency key so a retry does not create a duplicate export.
@@ -307,7 +307,7 @@ New billing methods are defined in fulfillment-service protos; CleanAPI generate
 | Read tenant costs with `BillingCosts` | Tenant Admin: “I want to view my organization's accumulated costs for the current and past billing periods.” |
 | Past invoices, draft charges, and exports | PRD stories remain. **Not this increment.** |
 
-The provider-status read remains available when billing is disabled. Provider-dependent billing calls return `BILLING_NOT_CONFIGURED`; core catalog and fulfillment methods continue to work without pricing or billing gates. The catalog inventory is OSAC-only and remains available. Audit API and storage details remain deferred under §9.3 and are not closed by this EP.
+The provider-status read remains available when billing is disabled. Provider-dependent billing calls return `BILLING_NOT_CONFIGURED`; core catalog and fulfillment methods continue to work without pricing or billing gates. The catalog inventory is OSAC-only and remains available. Billing audit is out of this EP (see §2.2); PRD audit stories are not closed here.
 
 # Drawbacks
 
@@ -338,27 +338,7 @@ Expose normalized provider status and the last successful **account-API** health
 
 The change adds fulfillment billing methods, account-assignment persistence, provider configuration, OPA rules, and optional pricing on existing VMaaS and CaaS catalog methods. BMaaS pricing and gates are out of this design (OSAC-3795). Deployments without a provider keep existing catalog and fulfillment behavior; no billing credentials or provider calls are needed. OSAC does not store provider prices, costs, charges, or invoices.
 
-M360 continues to map the existing metering event's `tenant_id` through the account's current `externalId`; the event schema does not change. Delayed usage after reassignment is not guaranteed to use the historical account. Existing assignments preserve OSAC history, and pre-activation usage is not billed retroactively. Invoice, draft-charge, and export APIs stay in the contract for later work; this increment does not implement them.
-
-# 9. Open Questions
-
-## 9.1 What does M360 account deactivation do to usage ingestion and rating?
-
-- **Status:** Resolved for OSAC behavior.
-- **Owner:** OSAC billing/provider integration team and Monetize360 integration contact
-- **Decision:** If billing is configured, OSAC keeps submitting usage. Rates are not required to emit. Existing resources keep running. M360 rating after deactivation is undocumented; provider rejection handling stays the current adapter retry/DLQ policy. Park-and-replay for inactive-account 4xx is out of this design.
-
-## 9.2 What timestamp should OSAC expose as `as_of` when M360 has no equivalent?
-
-- **Owner:** OSAC billing/provider integration team
-- **Status:** Resolved.
-- **Decision:** `as_of` is the time OSAC received a successful provider response. Set it only on current catalog prices and successful cost reads. `STALE` omits `as_of`. Provider `fromDate` / `toDate`, when present, are an effective period, not `as_of`.
-
-## 9.3 How should OSAC audit billing actions?
-
-- **Status:** Deferred to the platform audit feature.
-- **Owner:** OSAC billing feature owners with the platform audit/security owners
-- **Impact:** The PRD still requires audit entries for provider install, tenant-to-account linking, and (later) draft-invoice read/export. This EP does not select storage, taxonomy, retention, authorization, or a read surface, and does not close those stories. No billing-specific audit table is specified here.
+M360 continues to map the existing metering event's `tenant_id` through the account's current `externalId`; the event schema does not change. Delayed usage after reassignment is not guaranteed to use the historical account. Existing assignments preserve OSAC history, and pre-activation usage is not billed retroactively. Invoice, draft-charge, and export APIs stay in the contract for later work; this increment does not implement them. Billing audit storage and reads are out of this EP.
 
 # Graduation Criteria
 
