@@ -35,7 +35,7 @@ OSAC gets catalog prices and rate cards from its configured billing provider and
 - Provide Cloud Provider Admins provider-neutral, currency-aware rate-card rows that the Rates UI can display by service, resource match, rate, and related catalog item.
 - Enrich visible VMaaS and CaaS catalog list/get responses with read-time prices for default configurations, component details, account currency, freshness, and a price-may-vary indication.
 - Keep catalog browsing available with or without billing. When a provider is configured, apply the coverage-gate table in §4.6: a coverage gap still blocks the gated write; a provider outage does not block launch or resize. Catalog items whose `metadata.tenant` is the reserved `shared` or `system` tenant are not coverage-checked at publish; each tenant's launch is checked against that tenant's linked account.
-- Preserve the existing metering delivery path. Each usage event carries the account `correlation_id`. The billing provider attributes rated usage with `account_id = correlation_id`. `correlation_id` is not the OSAC tenant id.
+- Preserve the existing metering delivery path and add `correlation_id` to each usage event. During account pairing, match it against the billing provider's `externalId`, when available. `correlation_id` is not the OSAC tenant id or the provider's native `account_id`.
 - Return an estimate in the account currency and provider rate unit, with hourly and monthly recurring amounts normalized using a fixed 730-hour month where the rate is time-based.
 
 ## 2.2 Non-Goals
@@ -90,7 +90,7 @@ On the no branch, catalog and resource operations continue and make no billing-p
 
 On the yes branch, billing handlers use the association store and the pricing and coverage service. That service calls the provider-neutral control and query adapter. M360 is the first implementation of that adapter. A later provider plugs in at the same point. Catalog reads and launch coverage use this service. OSAC does not store the resolved prices.
 
-Usage stays on `osac-metering`. Each usage event includes the account `correlation_id`. The provider attributes the rated transaction with `account_id = correlation_id`. The event is not attributed by rewriting a tenant id onto the provider account.
+Usage stays on `osac-metering`. Each usage event includes the assignment's `correlation_id`. During tenant/account pairing, fulfillment matches that value against the provider account's `externalId`, when available. `correlation_id` is distinct from the provider's native `account_id`; OSAC does not write the tenant id onto the provider account.
 
 ### Pricing resolution
 
@@ -106,12 +106,13 @@ In M360, a contract is the set of service rates for one account. The configured 
 
 OSAC does not create billing accounts.
 
-1. The Cloud Provider Admin creates the account in the billing provider and sets `correlation_id` once on that account. `correlation_id` is a provider-agnostic id. It is not the OSAC tenant id, and it is not the provider's native account id.
-2. With billing configured, fulfillment discovers accounts through the provider list API, copies `correlation_id` onto `billing_account`, and exposes the rows as `BillingAccounts.List`. OSAC does not generate `correlation_id` and does not set it to the tenant id.
-3. The Cloud Provider Admin assigns a tenant to a billing account with `TenantBillingAssignments.Create` / `Update`.
-4. Enabling billing does not auto-create an account or assignment per existing tenant.
-5. No assignment, or an assignment that is not `CONNECTED` (including `PENDING`), fails gated publish/launch with `BILLING_ACCOUNT_UNAVAILABLE`, not `BILLING_COVERAGE_GAP`.
-6. Each metering event for that tenant includes the copied `correlation_id`. The provider later attributes rated transactions with `account_id = correlation_id`.
+1. The Cloud Provider Admin creates the account in the billing provider. When the provider exposes `externalId`, the admin uses the value OSAC stores as `correlation_id`. This value is not the OSAC tenant id or the provider's native account id.
+2. With billing configured, fulfillment discovers accounts through the provider list API and copies `externalId` to `billing_account.correlation_id` when available. OSAC does not generate it or set it to the tenant id.
+3. When the Cloud Provider Admin assigns or reassigns a tenant with `TenantBillingAssignments.Create` / `Update`, fulfillment lists provider accounts and verifies that exactly one account has an `externalId` matching the selected OSAC account's `correlation_id`, when the provider exposes `externalId`.
+4. This uniqueness check runs during assignment only. The Cloud Provider Admin is responsible for revalidating uniqueness before changing an assignment or the provider-side `externalId`; OSAC does not continuously check provider-side uniqueness.
+5. Enabling billing does not auto-create an account or assignment per existing tenant.
+6. No assignment, or an assignment that is not `CONNECTED` (including `PENDING`), fails gated publish/launch with `BILLING_ACCOUNT_UNAVAILABLE`, not `BILLING_COVERAGE_GAP`.
+7. Each metering event for that tenant includes the assignment's `correlation_id`. Where the provider supports `externalId`, the value is matched against that field; it is not the provider's native `account_id`.
 
 ## 4.2 Data Model / Schema Changes
 
@@ -130,7 +131,7 @@ This record is created only when a provider is configured and an account is disc
 | `provider_account_reference` | Provider-native account ID used for backend calls; it is not returned to ordinary clients. |
 | `display_name` | Provider-supplied account label shown in authorized OSAC account views. |
 | `base_currency` | Immutable ISO-4217 currency code used to interpret prices and costs. |
-| `correlation_id` | Provider-agnostic attribution id. Set once on the billing provider account, then copied into OSAC. Not the OSAC tenant id and not `provider_account_reference`. Each usage event for this account carries this value. The provider attributes rated transactions with `account_id = correlation_id`. |
+| `correlation_id` | OSAC's provider-agnostic attribution id. When the provider exposes `externalId`, account pairing matches this value to that field. Usage events carry it. It is not the OSAC tenant id, `provider_account_reference`, or the provider's native `account_id`. |
 | `status` | Last observed normalized state: `ACTIVE`, `INACTIVE`, or `UNKNOWN`. |
 | `status_observed_at` | Time the provider status was last checked, so its freshness is visible. |
 
@@ -147,7 +148,7 @@ Stores each time-bounded association between an OSAC tenant and a billing accoun
 | `billing_account_id` | Reference to `billing_account.id` for the account assigned to the tenant during this interval. |
 | `effective_from` | Timestamp at which this tenant/account assignment became active. |
 | `effective_to` | Timestamp at which this assignment stopped being active. `NULL` means it is the current assignment. |
-| `connection_state` | OSAC's normalized state for synchronizing the association with the provider, such as `PENDING` or `CONNECTED`. `PENDING` means the provider mapping has not yet been verified. |
+| `connection_state` | OSAC's normalized state for validating the provider account match. `PENDING` means assignment-time validation is incomplete; `CONNECTED` means the required match was validated. |
 | `created_by` | Authenticated OSAC principal that created the assignment. |
 
 For this milestone, enforce at most one active assignment per tenant and at most one active tenant per billing account. Close the old assignment and create its replacement in one database transaction. Assignment **history** stays time-versioned. Sharing one account across tenants is out of this design.
@@ -158,7 +159,7 @@ Do not add an assignment audit-correlation field in this design. Billing audit i
 
 Fulfillment-service protos define the API contract; REST is generated through CleanAPI. §4.3 and [openapi.yaml](openapi.yaml) give the public request and response JSON. Tenant assignments follow OSAC `Metadata`/`Spec`/`Status` conventions and reconcile provider state; account, catalog, rate-card, and cost read models may be flat. Proto and JSON field names use `snake_case`; enums use a type-prefixed `*_UNSPECIFIED = 0` value. Use `buf.validate` for required identifiers, currencies, and time ranges. The methods listed in §4.3 are the intended CleanAPI surface; reconciliation signals and provider-native account ids remain private. There is no billing audit schema in this contract.
 
-Use a durable reconciliation record for provider-link updates. `correlation_id` is set once on the provider account. OSAC copies it and does not replace it with the tenant id. Read the provider account before marking the link connected. An empty `correlation_id` leaves the assignment `PENDING`. A value equal to the `correlation_id` already stored for this billing account is idempotent success. Any other non-empty value fails with `ACCOUNT_ALREADY_BOUND` and is never overwritten. Use conditional update if the provider supports it. Otherwise, leave the assignment `PENDING` until a read-back verifies the value, and reconcile races or lost updates. Mark it `CONNECTED` only after verification. Only Cloud Provider Admins may create or replace links; `tenant_id` is not an authorization credential. Account reassignment closes the old effective interval and creates the new one at the operation's effective time. Tenant deletion revokes normal tenant access immediately and retains the association as a read-only tombstone until provider retention permits cleanup. Suspension does not change the account association or provider account status. Usage events copy `correlation_id` from the assignment that is active when the event is produced. A later reassignment does not rewrite `correlation_id` values already on emitted events. The provider rates `account_id = correlation_id` and does not re-resolve the event from `tenant_id`.
+During assignment creation or reassignment, fulfillment lists provider billing accounts. When the selected account has an `externalId`, fulfillment proceeds only if exactly one provider account has an `externalId` matching the OSAC account's `correlation_id`. Do not mark the assignment `CONNECTED` unless this uniqueness check succeeds. This is a read-only check performed during assignment; OSAC does not write `externalId` or continuously recheck uniqueness. The Cloud Provider Admin is responsible for revalidating uniqueness before changing the assignment or provider-side `externalId`. Only Cloud Provider Admins may create or replace assignments; `tenant_id` is not an authorization credential. Reassignment closes the old effective interval and creates the new one at the operation's effective time. Tenant deletion revokes normal tenant access immediately and retains the association as a read-only tombstone until provider retention permits cleanup. Suspension does not change the account association or provider account status. Usage events copy `correlation_id` from the assignment active when the event is produced. A later reassignment does not rewrite values on events already emitted. The account association comes from assignment-time matching, not from re-resolving the event's `tenant_id`.
 
 Rate-card snapshots, actual costs, balances, invoices, and rated transactions are not stored in this schema. Cost, invoice, and charge data are returned from the provider, subject to its retention and supported read capabilities.
 
@@ -176,7 +177,7 @@ The public JSON for every method below is in [openapi.yaml](openapi.yaml). Examp
 |---|---|---|
 | `BillingProviderStatuses.Get` | Cloud Provider Admin; Cloud Infrastructure Admin | Report `NOT_CONFIGURED` or normalized **account-API** health and supported capabilities. Available when billing is disabled. This is the UI skip signal for “billing off.” It is not usage-pipeline health. `usage_delivery_state` stays `UNKNOWN` in this design. Cloud Infrastructure Admins use metering lag/DLQ Prometheus metrics for delivery. |
 | `BillingAccounts.List` | Cloud Provider Admin | List discovered accounts with opaque OSAC IDs, display name, normalized status, base currency, and `correlation_id`. Do not expose provider-native account references. An empty list means no discovered accounts; it does **not** mean billing is disabled. |
-| `TenantBillingAssignments.List`, `Get`, `Create`, `Update` | Cloud Provider Admin | Read or change a tenant's time-versioned account assignment. Enforce the current 1:1 rule. Linking follows the read-before-write and verified-read-back protocol in §4.2. |
+| `TenantBillingAssignments.List`, `Get`, `Create`, `Update` | Cloud Provider Admin | Read or change a tenant's time-versioned account assignment. Enforce the current 1:1 rule. On assignment, list provider accounts and validate a unique `externalId` match against `correlation_id` when the provider exposes `externalId`, as described in §4.2. |
 | `CatalogPricingInputs.List` | Cloud Provider Admin | List **metered** billable dimensions and all default or selectable values in draft and published catalog items, with the items that use or offer each value. Available when billing is disabled. Non-metered components are deferred. |
 | `ProviderRateCardItems.List` | Cloud Provider Admin | Return provider rules as currency-specific, provider-neutral rows for the Rates UI. Preserve match conditions and rate unit; do not return raw provider payloads. With a tenant context, use that account's contract rate when present, and the configured service rate card only when the provider confirms no contract rate applies for that service. |
 | `PricingQueries.Create` | Authorized tenant caller or Cloud Provider Admin preview | Evaluate a declarative resource configuration and report whether the configured provider has rates for all required **metered** components, with component-level price and coverage results. Synchronous; not stored. A configured provider is required. |
@@ -441,7 +442,7 @@ Cache successful catalog prices in memory for this version. The retention period
 
 Keep the agreed provider retry policy (up to three retries) and **separate** OPEN-state circuit breakers for (1) pricing/coverage, (2) cost reads, and (3) usage submission. A cost-list 5xx must not open the pricing breaker or skip launch coverage. Suggested initial pricing-breaker thresholds remain advisory: five failed pricing requests within 30 seconds, open for 30 seconds, then allow one probe. Tune concurrency and provider rate limits during implementation.
 
-Provider usage submission remains on the existing Kafka path. The usage event gains `correlation_id`, copied from the assignment active when the event is produced. The provider attributes rated usage with `account_id = correlation_id`. Do not add tenant, account, or `correlation_id` as metric labels. Paginate cost reads.
+Provider usage submission remains on the existing Kafka path. The usage event gains `correlation_id`, copied from the assignment active when the event is produced. Assignment validation matches `correlation_id` against provider account `externalId` when available; it is not the provider's native `account_id`. Do not add tenant, account, or `correlation_id` as metric labels. Paginate cost reads.
 
 ## 4.5 Security Considerations
 
@@ -467,11 +468,11 @@ Do not check the configured service rate card in order to publish a shared or sy
 - **Provider is unavailable or a catalog timeout expires:** return catalog data. A cached amount may be shown with `status=STALE`; otherwise return `status=UNAVAILABLE` with no amount. Apply the table above for publish vs launch.
 - **Rate coverage is missing:** return `BILLING_COVERAGE_GAP`; never turn a missing rate into zero. Contract lookup failure or an unexpected ambiguous result is an error, never a fallback to the configured service rate card.
 - **Account is inactive or unknown:** reject a new assignment. For an existing assignment, show the state and block new billing-gated publication/launch. Do not suspend or stop existing resources. If billing is still configured, **keep submitting usage** for those resources. Rates are not required to emit. M360 rating after deactivation is undocumented; provider rejection handling stays the current metering adapter retry/DLQ policy. This design does not specify park-and-replay for an inactive-account 4xx.
-- **Account link conflicts:** if the provider `correlation_id` equals the value already stored for this billing account, treat the link as idempotent success. If it is empty, keep the assignment `PENDING`. If it is a different non-empty value, fail with `ACCOUNT_ALREADY_BOUND` and never overwrite it. Do not write the OSAC tenant id into `correlation_id`. Reconcile conditional-update races without marking the link connected prematurely. `PENDING` blocks launch (`BILLING_ACCOUNT_UNAVAILABLE`).
+- **Account match is missing or ambiguous:** during assignment, list provider accounts and require exactly one account whose `externalId` matches the selected OSAC account's `correlation_id`, when `externalId` is available. Do not mark an assignment connected when the match is not unique. Perform this check only during assignment. The Cloud Provider Admin is responsible for revalidating uniqueness before changing an assignment or the provider-side `externalId`; OSAC does not continuously check uniqueness. An unvalidated `PENDING` assignment blocks launch with `BILLING_ACCOUNT_UNAVAILABLE`.
 - **Provider operation is unsupported:** report the capability in provider status and return `UNIMPLEMENTED/PROVIDER_CAPABILITY_UNSUPPORTED`, not empty data or simulated success.
 - **Unauthorized tenant preview or hidden catalog item:** reject before calling the provider and disclose neither the item nor its price.
 - **Usage submission:** if billing is configured, **keep submitting usage**. Rates are not required to emit. Deactivating an M360 account does not stop emission; see the inactive-account bullet.
-- **Usage arrives after reassignment:** an emitted event keeps the `correlation_id` it was produced with. The provider rates that value. OSAC assignment history does not rewrite events already sent, and the provider does not re-resolve them from `tenant_id`.
+- **Usage arrives after reassignment:** an emitted event keeps the `correlation_id` it was produced with. Assignment validation matches that value to account `externalId` when available; it does not use `tenant_id` as the account key. OSAC assignment history does not rewrite events already sent.
 - **Provider switch is unsupported this milestone.** One provider URL and Secret. Changing configuration away from M360 is a new config, not a period-boundary migrate. There is no dual-adapter window and no replay into a second provider. In-flight Kafka/DLQ is not drained by this design.
 - **Export retries:** not this increment. If later implemented, use a stable idempotency key so a retry does not create a duplicate export.
 
@@ -500,7 +501,7 @@ OSAC-facing services use opaque IDs, normalized status, currency and rate units,
 
 Fulfillment and metering may share one M360 HTTP helper module and the same Secret reference, URL, and version. They remain separate processes with **separate circuit breakers**, so a pricing or cost failure cannot open the breaker on usage submission. Fulfillment must not import the metering adapters package. Fulfillment owns billing APIs, authorization, assignments, and provider response mapping. Metering owns Kafka, usage-event translation, retries, and submission. The shared client must not log raw bodies (the current metering adapter putting response bytes into errors is a required fix when that helper is shared).
 
-The time-versioned assignment model records history under a 1:1 active constraint. 1:N account sharing is out of this design. Each provider adapter maps that provider's account attribution field to `correlation_id`. OSAC clients do not see the provider's native field name. No provider change should expose native account or rate-card formats to OSAC clients.
+The time-versioned assignment model records history under a 1:1 active constraint. 1:N account sharing is out of this design. When a provider exposes account `externalId`, assignment validation matches it against `correlation_id`; the Cloud Provider Admin preserves uniqueness between assignment changes. OSAC clients do not see the provider's native field name. No provider change should expose native account or rate-card formats to OSAC clients.
 
 # 5. Interface Changes
 
@@ -523,7 +524,7 @@ The provider-status read remains available when billing is disabled. Provider-de
 - **Provider latency affects catalog pricing and billing gates.** A list timeout preserves catalog browsing but may leave some prices unavailable. Launch continues on a classified outage; a coverage gap still blocks.
 - **A stale amount can be mistaken for a current price.** The API marks it `STALE`, and it cannot pass a billing gate.
 - **Prospective estimates can differ from actual charges.** Usage, non-recurring charges, and provider processing affect the final amount; the provider remains authoritative.
-- **Reassignment does not rewrite events already produced.** Those events keep the `correlation_id` they carried. The provider rates that value and does not look up `tenant_id` again.
+- **Reassignment does not rewrite events already produced.** Those events keep the `correlation_id` they carried. Assignment validation matches that value to account `externalId` when available; `tenant_id` is not the account key.
 - **1:1 for this milestone.** Sharing one billing account across tenants is out of this design.
 
 # 6. Alternatives Considered
@@ -532,7 +533,7 @@ The provider-status read remains available when billing is disabled. Provider-de
 - **Require a provider quote API and omit estimates otherwise.** M360 has no documented quote API. The design instead matches documented provider rate rules and presents a prospective estimate; it does not interpret arbitrary formula text or claim to calculate actual charges.
 - **Allow publish or launch with unresolved coverage.** A coverage gap still blocks. A provider outage does not block launch; tenant-owned publish on outage remains fail-closed because a new offer cannot be confirmed covered.
 - **Publish shared catalog against the configured service rate card.** Rejected. `shared` / `system` are not billing accounts.
-- **Write the OSAC tenant id onto the provider account and let the provider map `tenant_id` at rating time.** Rejected. The provider account gets one `correlation_id`, set once, and that value is not the tenant id. OSAC copies it. Each usage event carries it. OSAC still keeps time-versioned assignments for its own history.
+- **Write the OSAC tenant id onto the provider account's `externalId` and let the provider map `tenant_id` at rating time.** Rejected. Usage events carry OSAC `correlation_id`, which is distinct from `tenant_id` and is matched to `externalId` when supported. Fulfillment validates externalId uniqueness during assignment; the Cloud Provider Admin revalidates before changing the assignment or provider-side value.
 - **Add a separate pricing endpoint for each catalog item.** Existing catalog `List` and `Get` methods carry optional pricing, using bounded provider requests and a timeout.
 - **Persist catalog prices in OSAC.** Prices remain provider-owned. A short-lived cache supports browsing and clearly labels old values as `STALE`.
 - **Dual adapters across a provider-switch boundary.** Rejected for this milestone. One URL, one Secret, switch unsupported.
@@ -540,13 +541,13 @@ The provider-status read remains available when billing is disabled. Provider-de
 
 # 7. Observability and Monitoring
 
-Expose normalized provider status and the last successful **account-API** health check to Cloud Provider Admins. Treat `NOT_CONFIGURED` as an expected state. Do not set this RPC to `DEGRADED` because usage delivery is stuck; fulfillment has no metering lag signal in this design. Track provider request latency and failures, rate-resolution outcomes, catalog-pricing states, and assignment-sync failures on fulfillment. Usage-delivery lag and DLQ depth stay on the metering adapter. Metrics may use provider and operation labels, but not tenant, account, resource, or project identifiers. Logs, traces, and API errors contain stable reason codes and request IDs only. Those request IDs are not the billing `correlation_id`. Redact provider payloads, credentials, financial lines, native account IDs, and `correlation_id` unconditionally.
+Expose normalized provider status and the last successful **account-API** health check to Cloud Provider Admins. Treat `NOT_CONFIGURED` as an expected state. Do not set this RPC to `DEGRADED` because usage delivery is stuck; fulfillment has no metering lag signal in this design. Track provider request latency and failures, rate-resolution outcomes, catalog-pricing states, and assignment-time account-match validation failures on fulfillment. Usage-delivery lag and DLQ depth stay on the metering adapter. Metrics may use provider and operation labels, but not tenant, account, resource, or project identifiers. Logs, traces, and API errors contain stable reason codes and request IDs only. Those request IDs are not the billing `correlation_id`. Redact provider payloads, credentials, financial lines, native account IDs, and `correlation_id` unconditionally.
 
 # 8. Impact and Compatibility
 
 The change adds fulfillment billing methods, account-assignment persistence, provider configuration, OPA rules, and optional pricing on existing VMaaS and CaaS catalog methods. BMaaS pricing and gates are out of this design (OSAC-3795). Deployments without a provider keep existing catalog and fulfillment behavior; no billing credentials or provider calls are needed. OSAC does not store provider prices, costs, charges, or invoices.
 
-The usage event gains `correlation_id`. The provider attributes rated usage with `account_id = correlation_id` and does not map `tenant_id` onto the account. Events already produced keep the `correlation_id` they carried. Existing assignments preserve OSAC history, and pre-activation usage is not billed retroactively. Invoice, draft-charge, and export APIs stay in the contract for later work; this increment does not implement them. Billing audit storage and reads are out of this EP.
+The usage event gains `correlation_id`. During assignment, fulfillment matches it against the provider account's `externalId`, when available, and verifies uniqueness. The Cloud Provider Admin must revalidate uniqueness before changing an assignment or provider-side `externalId`; OSAC does not monitor uniqueness continuously. Events already produced keep the `correlation_id` they carried. Existing assignments preserve OSAC history, and pre-activation usage is not billed retroactively. Invoice, draft-charge, and export APIs stay in the contract for later work; this increment does not implement them. Billing audit storage and reads are out of this EP.
 
 # Graduation Criteria
 

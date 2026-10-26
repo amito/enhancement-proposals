@@ -534,9 +534,10 @@ components:
         correlation_id:
           type: string
           description: >
-            Provider-agnostic attribution id copied from the provider account.
-            Not the OSAC tenant id. Usage events carry this value. The provider
-            attributes rated transactions with account_id equal to this value.
+            OSAC provider-agnostic attribution id carried on usage events. When
+            the provider exposes account externalId, assignment validation
+            matches this value against that field. It is not the OSAC tenant id
+            or the provider's native account_id.
     BillingAccountList:
       type: object
       required: [size, total, items]
@@ -576,16 +577,17 @@ components:
               description: BillingAccount.id assigned to the tenant for this interval.
         status:
           type: object
-          description: Server-observed provider-link state and assignment interval.
+          description: Server-observed assignment validation state and interval.
           properties:
             connection_state:
               type: string
               description: >
-                Whether OSAC verified the provider correlation_id. PENDING means
-                the value is missing or not confirmed by read-back and gated
-                publish/launch fail with BILLING_ACCOUNT_UNAVAILABLE. CONNECTED
-                means the stored value was verified. FAILED means the link was
-                rejected, including ACCOUNT_ALREADY_BOUND. UNSPECIFIED is unset.
+                Assignment-time provider account-match validation. PENDING
+                means validation is incomplete and gated publish/launch fail
+                with BILLING_ACCOUNT_UNAVAILABLE. CONNECTED means the required
+                provider match was validated; where externalId is supported,
+                exactly one provider account matched. FAILED means the match
+                could not be validated or was not unique. UNSPECIFIED is unset.
               enum:
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_UNSPECIFIED
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING

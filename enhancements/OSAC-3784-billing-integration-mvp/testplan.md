@@ -21,7 +21,7 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Preconditions
 
-- A metering event has a stable CloudEvent `source` and `id`; the linked M360 billing account has `externalId` set to the event's `tenant_id`.
+- A metering event has a stable CloudEvent `source` and `id`, plus the assignment's `correlation_id`. The linked M360 account's `externalId` matches that value.
 - The provider test endpoint returns a retryable error once, then accepts the event.
 
 ##### Steps
@@ -44,20 +44,24 @@ FR/NFR labels in this testplan are local grouping labels, not PRD identifiers. I
 
 ##### Preconditions
 
-- A Cloud Provider Admin can access an active existing provider account with a valid ISO-4217 currency.
+- A Cloud Provider Admin can access active provider accounts with valid ISO-4217 currencies.
+- One selected account has a unique `externalId` matching its OSAC `correlation_id`; another provider account pair has duplicate `externalId` values.
 - Another active billing account is already linked to a different tenant.
 
 ##### Steps
 
-1. Link the available account to an unlinked tenant using the billing-profile API.
-2. Attempt to link that account to a second tenant.
-3. Attempt to link an inactive account.
+1. Link the uniquely matched account to an unlinked tenant using the billing-profile API.
+2. Attempt to assign an account whose `externalId` matches more than one listed provider account.
+3. Attempt to link the first account to a second tenant.
+4. Attempt to link an inactive account.
 
 ##### Expected Results
 
-- The first request returns the normalized account ID, currency, and `CONNECTED` state after provider verification.
-- The second request returns `FAILED_PRECONDITION/ACCOUNT_ALREADY_BOUND` and leaves both assignments unchanged.
+- The first request returns the normalized account ID, currency, and `CONNECTED` state after the assignment-time account list confirms exactly one `externalId` match.
+- The duplicate `externalId` match fails assignment validation; no ambiguous provider account is selected or marked `CONNECTED`.
+- Reusing the first account for a second tenant returns `FAILED_PRECONDITION/ACCOUNT_ALREADY_BOUND` and leaves both assignments unchanged.
 - The inactive-account request returns `FAILED_PRECONDITION/ACCOUNT_INACTIVE`.
+- Uniqueness is checked on assignment only; the Cloud Provider Admin is responsible for revalidating it before changing an assignment or provider-side `externalId`.
 
 ### FR-3: Scope cost results to authorized tenants/projects
 
@@ -95,7 +99,7 @@ This increment implements `BillingCosts.List` only. Draft charges, invoices, and
 
 ##### Preconditions
 
-- A tenant has an active billing assignment, its M360 account `externalId` matches the tenant ID, and usage events are queued.
+- A tenant has an active billing assignment, its M360 account `externalId` matches the assignment's `correlation_id`, and usage events are queued.
 
 ##### Steps
 
@@ -106,7 +110,7 @@ This increment implements `BillingCosts.List` only. Draft charges, invoices, and
 ##### Expected Results
 
 - The tenant user receives `PERMISSION_DENIED` or `NOT_FOUND` for the deleted tenant.
-- The queued event retains its `tenant_id` and is delivered against the linked M360 account's matching `externalId`.
+- The queued event retains its `tenant_id` and `correlation_id`; the assignment's validated account match ties the latter to the linked account's `externalId`.
 - The assignment is marked read-only/deleted and remains stored until the configured provider-retention cleanup condition is met.
 
 ### FR-5: Require provider rates for every billable component before publication/provisioning
@@ -616,7 +620,7 @@ This increment implements `BillingCosts.List` only. Draft charges, invoices, and
 
 ### FR-22: Preserve assignment history through reassignment, suspension, and deletion
 
-#### TC-FR22-01: Preserve assignment history and the existing usage event contract
+#### TC-FR22-01: Preserve assignment history and event attribution fields
 
 | Interface / component | Priority | Automation |
 |-----------------|----------|------------|
@@ -625,20 +629,20 @@ This increment implements `BillingCosts.List` only. Draft charges, invoices, and
 ##### Preconditions
 
 - Tenant assignment A is effective before timestamp T; assignment B replaces it at timestamp T.
-- The existing metering event contains `tenant_id`, and the selected M360 billing account's `externalId` is synchronized to that value.
+- The metering event contains `tenant_id` and assignment-derived `correlation_id`; assignment-time account listing has verified a unique M360 `externalId` match.
 
 ##### Steps
 
 1. Suspend the tenant, then resume it without changing account assignments.
 2. Reassign the account at T and inspect the current and historical assignment records.
-3. Verify the existing usage event format remains unchanged and still carries `tenant_id`.
+3. Verify the event retains `tenant_id` and carries `correlation_id` from the assignment active when it was produced.
 4. Delete the tenant and inspect the retained billing assignment tombstone.
 
 ##### Expected Results
 
 - Assignment A closes at T and remains in history for audit; assignment B becomes current.
 - Suspension does not change the assignment or deactivate a provider account. Deletion revokes normal tenant access while retaining the billing tombstone.
-- The metering event schema has no historical billing-account target. M360 attributes usage using the current `externalId` mapping, so no event-time account attribution is asserted for delayed events.
+- Assignment changes do not rewrite existing events' `correlation_id`; assignment-time validation ties it to account `externalId`, is not repeated in the background, and must be revalidated by the Cloud Provider Admin before changing the assignment or provider-side `externalId`.
 
 ### FR-23: Enrich VMaaS catalog items with provider pricing
 
@@ -1090,7 +1094,7 @@ Non-metered add-ons, licenses, and setup fees are **deferred**. This increment c
 ##### Expected Results
 
 - Public responses contain normalized account, price, status, component, and reason fields only; catalog responses omit provider-native service, attribute, contract, and rate-card identifiers.
-- Logs contain the correlation ID and normalized failure code but none of the credential, External ID, contract ID, rate-card ID, or response-body values.
+- Logs contain stable request identifiers and normalized failure codes, but none of the correlation ID, credential, External ID, contract ID, rate-card ID, or response-body values.
 
 ### NFR-4: Keep OSAC API behavior provider-neutral
 
@@ -1160,7 +1164,7 @@ The 30 pre-existing OSAC-3784 cases below are retained. Work ownership is a `[DE
 | TC-FR21-01 | fulfillment-service: reject launch for inactive linked account | Unit; `[DEV]` story not created | Proposed launch handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Launch gate real; account status fake. Deployed service integration is not yet execution-ready for billing configuration. |
 | TC-FR21-02 | fulfillment-service: reject tenant-owned publish/launch for unresolved coverage; skip shared/system publish | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Gate and resource handler real; missing-rate/unsupported-rule responses faked. Shared/system items must not be coverage-checked at publish. |
 | TC-FR21-03 | fulfillment-service: allow launch and fail tenant-owned publish when provider is unavailable | Unit; `[DEV]` story not created | Proposed pricing/resource handler tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | Live-check decision real; timeout injected at provider interface. Launch allowed; tenant-owned publish fail-closed. Catalog list/get outage behavior is separately covered by TC-FR27-01. |
-| TC-FR22-01 | fulfillment-service/osac-metering: preserve assignment history and existing usage event contract | Unit/contract; `[DEV]` story not created | Proposed assignment tests under `fulfillment-service/internal/` (`ginkgo run -r internal`) and existing adapter contract tests under `osac-metering/adapters/` (`make test`) | Local tests verify assignment intervals, tombstone behavior, current `externalId` synchronization, and the unchanged `tenant_id` event format. They do not exercise live M360 routing; user-confirmed behavior is that M360 uses the current `externalId`, so event-time attribution is not asserted. |
+| TC-FR22-01 | fulfillment-service/osac-metering: preserve assignment history and event attribution fields | Unit/contract; `[DEV]` story not created | Proposed assignment tests under `fulfillment-service/internal/` (`ginkgo run -r internal`) and existing adapter contract tests under `osac-metering/adapters/` (`make test`) | Local tests verify assignment intervals, tombstone behavior, assignment-time `externalId` uniqueness validation, and `correlation_id` on usage events without replacing `tenant_id`. They do not exercise live M360 routing; the Cloud Provider Admin owns revalidating uniqueness before changing the assignment or provider-side `externalId`. |
 | TC-FR34-01 | fulfillment-service: operate core catalog/resource APIs without billing | Component integration; `[DEV]` story not created | Fulfillment API suite; `make -C ../osac-installer test PLATFORM=kind PROFILE=dev NS=osac SUITE=fulfillment` (`fulfillment-service/`) | Fulfillment Service and database run for real with no provider adapter or credentials. Verify status, catalog, publish/launch, pricing-input inventory, each provider-dependent route family returning `BILLING_NOT_CONFIGURED`, and absence of provider calls. |
 | TC-NFR1-01 | fulfillment-service: authorize tenant/project before provider calls | Unit; `[DEV]` story not created | Proposed auth/query tests under `internal/`; `ginkgo run -r internal` (`fulfillment-service/`) | OSAC auth/filter path and provider-call spy real in process; identity and provider responses faked. |
 | TC-NFR2-01 | osac-metering: recover after restart without loss/duplication | Component integration; owner/ticket unresolved | No runnable Kafka-backed suite/command is documented; see OSAC-4846 | Requires real Kafka offsets/restart/flush behavior and controllable provider. `make test` unit coverage is not sufficient for this boundary. |
