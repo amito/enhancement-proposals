@@ -46,6 +46,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BillingAccountList"
+        "400":
+          $ref: "#/components/responses/BillingNotConfigured"
   /billing/tenant_billing_assignments:
     get:
       tags: [this-increment]
@@ -80,6 +82,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TenantBillingAssignment"
+        "400":
+          $ref: "#/components/responses/BillingAssignmentFailedPrecondition"
   /billing/tenant_billing_assignments/{id}:
     get:
       tags: [this-increment]
@@ -115,6 +119,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TenantBillingAssignment"
+        "400":
+          $ref: "#/components/responses/BillingAssignmentFailedPrecondition"
   /billing/catalog_pricing_inputs:
     get:
       tags: [this-increment]
@@ -141,8 +147,9 @@ paths:
         - name: tenant_id
           in: query
           description: >
-            Read rates for this tenant's linked billing account. Omit it to
-            read without a tenant-specific contract.
+            Read the rate the provider resolves for this tenant's linked
+            billing account. Omit it to read the service's configured rate
+            without resolving a specific billing account.
           schema:
             type: string
         - name: service
@@ -172,27 +179,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ProviderRateCardItemList"
-  /billing/pricing_queries:
-    post:
-      tags: [this-increment]
-      operationId: pricingQueriesCreate
-      summary: Evaluate coverage for a selected configuration
-      description: >
-        Synchronous. Nothing is stored. Create is the fulfillment verb for a
-        POST body. There is no later Get.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/PricingQueryRequest"
-      responses:
-        "200":
-          description: Component coverage for the submitted configuration.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/PricingQueryResponse"
+        "400":
+          $ref: "#/components/responses/BillingNotConfigured"
   /billing/price_estimates:
     post:
       tags: [this-increment]
@@ -215,6 +203,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PriceEstimateResponse"
+        "400":
+          $ref: "#/components/responses/PriceEstimateFailedPrecondition"
 components:
   parameters:
     id:
@@ -254,7 +244,55 @@ components:
         implemented yet; when omitted, the result order is undefined.
       schema:
         type: string
+  responses:
+    BillingNotConfigured:
+      description: >
+        FAILED_PRECONDITION with reason BILLING_NOT_CONFIGURED. Billing is
+        off for this deployment, so provider-dependent methods are
+        unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    BillingAssignmentFailedPrecondition:
+      description: >
+        FAILED_PRECONDITION. The reason is BILLING_NOT_CONFIGURED when
+        billing is off, or BILLING_CORRELATION_ID_CONFLICT when
+        correlation_id is already set to different values on the OSAC and
+        provider sides. On a conflict neither side is changed. Equal values
+        are not a conflict.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+    PriceEstimateFailedPrecondition:
+      description: >
+        FAILED_PRECONDITION. Billing is off (BILLING_NOT_CONFIGURED), or a
+        component of the configuration has missing or stale coverage. A
+        successful response never carries a stale or missing estimate.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
   schemas:
+    Status:
+      type: object
+      description: Standard gRPC status body returned on errors.
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          description: gRPC status code. FAILED_PRECONDITION is 9.
+        message:
+          type: string
+        details:
+          type: array
+          description: >
+            Error details. The google.rpc.ErrorInfo entry carries the
+            machine-readable reason, such as BILLING_CORRELATION_ID_CONFLICT.
+          items:
+            type: object
+            additionalProperties: true
     BillingProviderStatus:
       type: object
       required: [state, usage_delivery_state]
@@ -288,7 +326,7 @@ components:
             type: string
             description: >
               UNSPECIFIED is unset. PRICING covers rate cards, catalog prices,
-              coverage checks, PricingQueries, and PriceEstimates.
+              coverage checks, and PriceEstimates.
             enum:
               - BILLING_PROVIDER_CAPABILITY_UNSPECIFIED
               - BILLING_PROVIDER_CAPABILITY_PRICING
@@ -513,18 +551,6 @@ components:
           description: ISO-4217 currency of rate.amount.
           minLength: 3
           maxLength: 3
-        source:
-          type: string
-          description: >
-            CONTRACT is a rate for one account. DEFAULT is the configured
-            service rate card, used when that account has no contract rate
-            for the service only when the provider confirms no contract rate
-            applies. A failed or ambiguous contract lookup is an error and does
-            not select DEFAULT. UNSPECIFIED is unset and is not a real card.
-          enum:
-            - BILLING_RATE_CARD_SOURCE_UNSPECIFIED
-            - BILLING_RATE_CARD_SOURCE_DEFAULT
-            - BILLING_RATE_CARD_SOURCE_CONTRACT
         resource_conditions:
           type: array
           description: Match conditions for this rate; all conditions on a row apply together.
@@ -611,62 +637,6 @@ components:
         bare_metal_instance:
           type: object
           description: BMaaS pricing is out of this design.
-    PricingQueryRequest:
-      type: object
-      required: [configuration]
-      properties:
-        tenant_id:
-          type: string
-          description: Cloud Provider Admin preview target. Tenant callers omit it.
-        configuration:
-          $ref: "#/components/schemas/BillingPricingConfiguration"
-    PricingQueryResponse:
-      type: object
-      properties:
-        currency_code:
-          type: string
-          description: Linked billing account's three-letter ISO-4217 currency.
-          minLength: 3
-          maxLength: 3
-        components:
-          type: array
-          description: Component-level rate and coverage results for the selected configuration.
-          items:
-            type: object
-            properties:
-              service:
-                type: string
-                description: OSAC service for this component; compute_instance or cluster in this increment.
-              description:
-                type: string
-                description: Short component label, such as the selected instance type name.
-              coverage:
-                type: string
-                description: >
-                  COVERED means a current rate matched. GAP means no rate exists
-                  for this metered component and is not zero. STALE means a
-                  retained amount is not a current read and cannot pass a gate.
-                  UNAVAILABLE means the rate could not be read. UNSPECIFIED is
-                  unset and is not a result.
-                enum:
-                  - PRICING_COVERAGE_STATE_UNSPECIFIED
-                  - PRICING_COVERAGE_STATE_COVERED
-                  - PRICING_COVERAGE_STATE_GAP
-                  - PRICING_COVERAGE_STATE_STALE
-                  - PRICING_COVERAGE_STATE_UNAVAILABLE
-              amount:
-                type: string
-                description: >
-                  Provider rate as a decimal string, present only for COVERED
-                  and STALE. OSAC does not round it.
-              unit:
-                type: string
-                description: >
-                  Provider rate unit. API version 1 constrains this value to
-                  second. Present when amount is present; omitted when coverage
-                  is GAP or UNAVAILABLE.
-                enum: [second]
-                example: second
     PriceEstimateRequest:
       type: object
       required: [configuration]
