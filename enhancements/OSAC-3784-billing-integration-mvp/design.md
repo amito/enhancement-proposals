@@ -40,7 +40,7 @@ OSAC gets catalog prices and rate cards from its configured billing provider and
 
 ## 2.2 Non-Goals
 
-- Create billing accounts, author rate cards, edit provider catalog data, process payments, or issue invoices. Invoice **reads** remain a PRD story and stay in the API table; they are **not this increment**. The provider remains the invoice source of truth.
+- Create billing accounts, author rate cards, edit provider catalog data, or process payments.
 - Show account balances or rated transactions in the first billing UI slice.
 - Persist provider catalog prices as OSAC catalog records or create a second M360 pricing client in the catalog server.
 - Run several billing providers concurrently in one deployment; a deployment may have billing disabled or configure one provider. Switching provider at a period boundary is **unsupported this milestone**.
@@ -49,7 +49,7 @@ OSAC gets catalog prices and rate cards from its configured billing provider and
 - Apply an additional billing-rounding rule to provider amounts. Preserve decimal values; UI formatting to 2–3 fractional digits is sufficient, and configurable display precision is a nice-to-have.
 - Price or gate BMaaS ([OSAC-3795](https://redhat.atlassian.net/browse/OSAC-3795)).
 - Declare or gate non-metered add-ons, licenses, or setup fees. Coverage and catalog inventory in this increment are **metered** billable dimensions only.
-- Implement OSAC-side billing audit storage or an audit List API. Provider install, tenant-to-account linking, and later draft-invoice read/export still have PRD audit stories; those move with the platform audit feature. This design does not select storage, taxonomy, retention, authorization, or a read surface, and does not specify a billing-specific audit table.
+- Implement OSAC-side billing audit storage or an audit List API. Provider installation and tenant-to-account linking have PRD audit stories; those move with the platform audit feature. This design does not select storage, taxonomy, retention, authorization, or a read surface, and does not specify a billing-specific audit table.
 - Share one billing account across tenants (PRD 1:N).
 
 ## 2.3 Assumptions
@@ -60,9 +60,9 @@ OSAC gets catalog prices and rate cards from its configured billing provider and
 
 # 3. Motivation / Background
 
-OSAC already tracks how much VMaaS and CaaS tenants use. It still cannot bill that usage. It cannot link a tenant to a billing account, show a price or a running cost, or stop a new offering or launch when a rate is missing. Catalog items have no prices, so tenant users either provision first and find out later, or they look the price up outside OSAC.
+OSAC already tracks how much VMaaS and CaaS tenants use. It still cannot bill that usage. It cannot link a tenant to a billing account, show a price, or stop a new offering or launch when a rate is missing. Catalog items have no prices, so tenant users either provision first and find out later, or they look the price up outside OSAC.
 
-The billing system (M360 first) still owns rates and invoices. OSAC has to find the accounts, attach each tenant, send usage, and show the prices and costs that system returns. OSAC's own UI, API, and CLI should not have to speak the billing vendor's language.
+The billing system (M360 first) still owns rates. OSAC has to find the accounts, attach each tenant, send usage, and show prices from that system. OSAC's own UI, API, and CLI should not have to speak the billing vendor's language.
 
 Billing can be left off: if no billing system is installed, browsing the catalog and creating resources must keep working.
 
@@ -80,7 +80,7 @@ flowchart TD
   BILLING --> CTRL[Pricing and coverage service]
   BILLING --> CORE
   CTRL --> ADAPTER[Provider-neutral control and query adapter]
-  ADAPTER --> M360[M360 account, pricing, and cost adapter]
+  ADAPTER --> M360[M360 account and pricing adapter]
   ADAPTER --> OTHER[Future provider adapter]
 ```
 
@@ -130,12 +130,12 @@ This record is created only when a provider is configured and an account is disc
 | `provider_key` | Identifies the configured billing adapter, such as M360. Provider configuration stays server-side. |
 | `provider_account_reference` | Provider-native account ID used for backend calls; it is not returned to ordinary clients. |
 | `display_name` | Provider-supplied account label shown in authorized OSAC account views. |
-| `base_currency` | Immutable ISO-4217 currency code used to interpret prices and costs. |
+| `base_currency` | Immutable ISO-4217 currency code used to interpret prices. |
 | `correlation_id` | OSAC's provider-agnostic attribution id. When the provider exposes `externalId`, account pairing matches this value to that field. Usage events carry it. It is not the OSAC tenant id, `provider_account_reference`, or the provider's native `account_id`. |
 | `status` | Last observed normalized state: `ACTIVE`, `INACTIVE`, or `UNKNOWN`. |
 | `status_observed_at` | Time the provider status was last checked, so its freshness is visible. |
 
-Provider credentials are not fields in this table; they remain in the configured Secret mechanism. Account metadata is refreshed from the provider. Rate-card values, estimates, actual costs, and rated transactions are not persisted as OSAC-owned prices.
+Provider credentials are not fields in this table; they remain in the configured Secret mechanism. Account metadata is refreshed from the provider. Rate-card values, estimates, and rated transactions are not persisted as OSAC-owned prices.
 
 ### `tenant_billing_assignment`
 
@@ -157,21 +157,18 @@ Do not add an assignment audit-correlation field in this design. Billing audit i
 
 ### API schema boundary
 
-Fulfillment-service protos define the API contract; REST is generated through CleanAPI. §4.3 and [openapi.yaml](openapi.yaml) give the public request and response JSON. Tenant assignments follow OSAC `Metadata`/`Spec`/`Status` conventions and reconcile provider state; account, catalog, rate-card, and cost read models may be flat. Proto and JSON field names use `snake_case`; enums use a type-prefixed `*_UNSPECIFIED = 0` value. Use `buf.validate` for required identifiers, currencies, and time ranges. The methods listed in §4.3 are the intended CleanAPI surface; reconciliation signals and provider-native account ids remain private. There is no billing audit schema in this contract.
+Fulfillment-service protos define the API contract; REST is generated through CleanAPI. §4.3 and [openapi.yaml](openapi.yaml) give the public request and response JSON. Tenant assignments follow OSAC `Metadata`/`Spec`/`Status` conventions and reconcile provider state; account, catalog, and rate-card read models may be flat. Proto and JSON field names use `snake_case`; enums use a type-prefixed `*_UNSPECIFIED = 0` value. Use `buf.validate` for required identifiers, currencies, and time ranges. The methods listed in §4.3 are the intended CleanAPI surface; reconciliation signals and provider-native account ids remain private. There is no billing audit schema in this contract.
 
 During assignment creation or reassignment, fulfillment lists provider billing accounts. When the selected account has an `externalId`, fulfillment proceeds only if exactly one provider account has an `externalId` matching the OSAC account's `correlation_id`. Do not mark the assignment `CONNECTED` unless this uniqueness check succeeds. This is a read-only check performed during assignment; OSAC does not write `externalId` or continuously recheck uniqueness. The Cloud Provider Admin is responsible for revalidating uniqueness before changing the assignment or provider-side `externalId`. Only Cloud Provider Admins may create or replace assignments; `tenant_id` is not an authorization credential. Reassignment closes the old effective interval and creates the new one at the operation's effective time. Tenant deletion revokes normal tenant access immediately and retains the association as a read-only tombstone until provider retention permits cleanup. Suspension does not change the account association or provider account status. Usage events copy `correlation_id` from the assignment active when the event is produced. A later reassignment does not rewrite values on events already emitted. The account association comes from assignment-time matching, not from re-resolving the event's `tenant_id`.
 
-Rate-card snapshots, actual costs, balances, invoices, and rated transactions are not stored in this schema. Cost, invoice, and charge data are returned from the provider, subject to its retention and supported read capabilities.
-
 ## 4.3 API Changes
 
-Fulfillment-service protos define the API contract. CleanAPI generates REST endpoints from the proto annotations; clients use the fulfillment API rather than provider routes. These proposed services use standard methods and provider-neutral responses. Tenant assignments are OSAC objects with desired and observed state; provider, catalog, rate-card, cost, and invoice reads are flat read models. Assignment reconciliation has a private `Signal` method. Public exposure is controlled through CleanAPI; provider-native identifiers and credentials remain private.
+Fulfillment-service protos define the API contract. CleanAPI generates REST endpoints from the proto annotations; clients use the fulfillment API rather than provider routes. These proposed services use standard methods and provider-neutral responses. Tenant assignments are OSAC objects with desired and observed state; provider, catalog, and rate-card reads are flat read models. Assignment reconciliation has a private `Signal` method. Public exposure is controlled through CleanAPI; provider-native identifiers and credentials remain private.
 
 The public JSON for every method below is in [openapi.yaml](openapi.yaml). Examples use protobuf enum names. `Get`, `Create`, and `Update` return the object itself. `List` returns `size`, `total`, and `items`. Paths are under `/api/fulfillment/v1`.
 
-**This increment:** `BillingProviderStatuses.Get`, `BillingAccounts.List`, `TenantBillingAssignments.*`, `CatalogPricingInputs.List`, `ProviderRateCardItems.List`, existing VMaaS/CaaS catalog `List`/`Get` pricing, coverage gates, `BillingCosts.List`. `PricingQueries.Create` and `PriceEstimates.Create` are backend evaluation APIs for a selected configuration; catalog cards use catalog `List`/`Get`.
+**This increment:** `BillingProviderStatuses.Get`, `BillingAccounts.List`, `TenantBillingAssignments.*`, `CatalogPricingInputs.List`, `ProviderRateCardItems.List`, existing VMaaS/CaaS catalog `List`/`Get` pricing, and coverage gates. `PricingQueries.Create` and `PriceEstimates.Create` are backend evaluation APIs for a selected configuration; catalog cards use catalog `List`/`Get`.
 
-**Kept, not this increment:** `BillingInvoices.List`/`Get`, `DraftCharges.List`, `BillingExports.Create`/`Get`. They remain in the table so later work does not invent a second contract. This increment does not implement them.
 
 | Service and method | Caller | Contract |
 |---|---|---|
@@ -181,12 +178,8 @@ The public JSON for every method below is in [openapi.yaml](openapi.yaml). Examp
 | `CatalogPricingInputs.List` | Cloud Provider Admin | List **metered** billable dimensions and all default or selectable values in draft and published catalog items, with the items that use or offer each value. Available when billing is disabled. Non-metered components are deferred. |
 | `ProviderRateCardItems.List` | Cloud Provider Admin | Return provider rules as currency-specific, provider-neutral rows for the Rates UI. Preserve match conditions and rate unit; do not return raw provider payloads. With a tenant context, use that account's contract rate when present, and the configured service rate card only when the provider confirms no contract rate applies for that service. |
 | `PricingQueries.Create` | Authorized tenant caller or Cloud Provider Admin preview | Evaluate a declarative resource configuration and report whether the configured provider has rates for all required **metered** components, with component-level price and coverage results. Synchronous; not stored. A configured provider is required. |
-| `PriceEstimates.Create` | Authorized tenant caller or Cloud Provider Admin preview | Return a prospective recurring estimate in the account currency and provider rate unit. Not a charge or invoice. Preserve the provider amount and unit; label any 730-hour monthly projection as OSAC-derived. A configured provider is required. |
+| `PriceEstimates.Create` | Authorized tenant caller or Cloud Provider Admin preview | Return a prospective recurring estimate in the account currency and provider rate unit. Not a provider charge. Preserve the provider amount and unit; label any 730-hour monthly projection as OSAC-derived. A configured provider is required. |
 | Existing VMaaS and CaaS catalog `List` / `Get` methods | Callers already authorized to view the catalog item | Add optional pricing for the item's default configuration when a provider is configured. That is one price for the locked or default billable values, not a price for every editable choice. Use the existing catalog methods; do not create a parallel catalog API. |
-| `BillingCosts.List` | Tenant Admin; Tenant User for visible resources/projects; Cloud Provider Admin for assigned tenants | Return provider-calculated costs for the request `from_date`/`to_date` (the provider's billing period; OSAC does not invent a calendar). Group by service, resource, and project when those ids are on the line. Nested project visibility: skip rows the caller cannot see; do not fail the whole list on one unattributed line. Successful reads include `as_of` (OSAC fetch time). Under 1:1, if M360 omits tenant on a line, attribute it to the linked tenant; drop lines whose tenant id is present and differs. No account-balance API. |
-| `DraftCharges.List` | Cloud Provider Admin | **Not this increment.** Read-only, tenant-scoped draft-charge view when the provider supports it. Unsupported capability returns `UNIMPLEMENTED/PROVIDER_CAPABILITY_UNSUPPORTED`, not an empty result. |
-| `BillingInvoices.List`, `Get` | Tenant Admin; Cloud Provider Admin for assigned tenants | **Not this increment.** Read past invoices and itemized charge breakdowns from the provider, filtered to the authorized tenant. OSAC does not issue, modify, or persist invoices. |
-| `BillingExports.Create`, `Get` | Cloud Provider Admin | **Not this increment.** Start and inspect an export for an authorized tenant and billing period when supported. |
 
 ### Request and response formats
 
@@ -202,8 +195,7 @@ The request and response schemas, field descriptions, enum meanings, and shared 
   "provider_key": "m360",
   "message": "",
   "supported_capabilities": [
-    "BILLING_PROVIDER_CAPABILITY_PRICING",
-    "BILLING_PROVIDER_CAPABILITY_COSTS"
+    "BILLING_PROVIDER_CAPABILITY_PRICING"
   ],
   "last_successful_check": "2026-10-21T09:00:00Z",
   "usage_delivery_state": "BILLING_USAGE_DELIVERY_STATE_UNKNOWN"
@@ -347,7 +339,7 @@ Response:
 
 #### `PriceEstimates.Create`
 
-`POST /api/fulfillment/v1/billing/price_estimates`. The request fields are the same as `PricingQueries.Create`. The response is a prospective recurring estimate in the account currency. It is not a provider charge and not `BillingCosts`. The call fails with `FAILED_PRECONDITION` when any component is missing or stale, so a successful body uses `PRICE_ESTIMATE_STATUS_CURRENT` only.
+`POST /api/fulfillment/v1/billing/price_estimates`. The request fields are the same as `PricingQueries.Create`. The response is a prospective recurring estimate in the account currency. It is not a provider charge. The call fails with `FAILED_PRECONDITION` when any component is missing or stale, so a successful body uses `PRICE_ESTIMATE_STATUS_CURRENT` only.
 
 ```json
 {
@@ -395,58 +387,23 @@ The example is that object on one catalog item. `status` is stale, so the amount
 
 M360 has no observation timestamp to copy. If the provider supplies `fromDate` / `toDate`, expose them as an effective period, separate from `as_of`.
 
-#### `BillingCosts.List`
-
-`GET /api/fulfillment/v1/billing/costs`.
-
-```json
-{
-  "size": 1,
-  "total": 1,
-  "items": [
-    {
-      "project_id": "proj-1",
-      "resource_id": "vm-1",
-      "service": "compute_instance",
-      "amount": "108.00",
-      "currency_code": "USD",
-      "period_start": "2026-10-01",
-      "period_end": "2026-10-21",
-      "as_of": "2026-10-21T09:00:00Z"
-    }
-  ]
-}
-```
-
-Under the 1:1 rule, a cost line with no tenant id is attributed to the linked tenant. A line that names a different tenant is dropped. There is no account-balance field.
-
-#### Not this increment
-
-These methods stay in [openapi.yaml](openapi.yaml) so a later increment does not invent a second contract. An unsupported provider returns `UNIMPLEMENTED` / `PROVIDER_CAPABILITY_UNSUPPORTED`, not an empty success.
-
-`DraftCharges.List` is `GET /api/fulfillment/v1/billing/draft_charges`. It returns one provider charge per uninvoiced row. This read-only view is not part of this increment.
-
-`BillingInvoices.List` is `GET /api/fulfillment/v1/billing/invoices`. `Get` is `GET /api/fulfillment/v1/billing/invoices/{id}` and includes the provider's line items. `List` returns headers only. OSAC does not issue or edit invoices.
-
-`BillingExports.Create` is `POST /api/fulfillment/v1/billing/exports`. Reusing an idempotency key retries the same export. `Get` is `GET /api/fulfillment/v1/billing/exports/{id}`.
-
 Billing is optional per deployment. `BillingProviderStatuses.Get` reports `NOT_CONFIGURED`; provider-dependent methods return `FAILED_PRECONDITION/BILLING_NOT_CONFIGURED`. The OSAC-only catalog inventory remains available. Existing catalog methods return catalog data without pricing, and billing-specific publish/launch gates are skipped. Core authorization, catalog validation, and resource checks still apply.
 
-Provider capabilities for pricing and costs are reported explicitly. Draft charges, invoices, and exports stay unsupported until a later increment confirms the provider implements them. Never imply that an unsupported operation returned an empty successful result. This increment has no billing audit read surface.
+Provider pricing capabilities are reported explicitly. Do not imply that unsupported pricing returns an empty successful result. This increment has no billing audit read surface.
 
 ## 4.4 Scalability and Performance
 
-When billing is disabled, make no provider calls. Account, status, pricing, and cost reads use provider timeouts and retries; an open **pricing** circuit returns promptly for catalog browse. For catalog lists, use bounded parallel price lookups and a list-level timeout. Each lookup inherits the remaining time. If the timeout expires, return the catalog items: unfinished current prices are `UNAVAILABLE` without an amount, or use a retained amount only with `STALE` status. A billing-gated single-item publish or launch has its own timeout and requires a fresh provider check. Launch wrappers treat classified provider unavailability as allow; they do not treat `STALE` cache as coverage.
+When billing is disabled, make no provider calls. Account, status, and pricing reads use provider timeouts and retries; an open **pricing** circuit returns promptly for catalog browse. For catalog lists, use bounded parallel price lookups and a list-level timeout. Each lookup inherits the remaining time. If the timeout expires, return the catalog items: unfinished current prices are `UNAVAILABLE` without an amount, or use a retained amount only with `STALE` status. A billing-gated single-item publish or launch has its own timeout and requires a fresh provider check. Launch wrappers treat classified provider unavailability as allow; they do not treat `STALE` cache as coverage.
 
 Cache successful catalog prices in memory for this version. The retention period is configuration. A later version can move the same key to Redis or another storage-backed cache. The cache key includes provider, billing account, catalog item id, a hash of the default configuration, and currency. A global item priced for one tenant must not be served to another. If refresh fails after the cache expires, show the retained amount as `STALE`; it remains useful for browsing but cannot pass a billing gate.
 
-Keep the agreed provider retry policy (up to three retries) and **separate** OPEN-state circuit breakers for (1) pricing/coverage, (2) cost reads, and (3) usage submission. A cost-list 5xx must not open the pricing breaker or skip launch coverage. Suggested initial pricing-breaker thresholds remain advisory: five failed pricing requests within 30 seconds, open for 30 seconds, then allow one probe. Tune concurrency and provider rate limits during implementation.
+Keep the agreed provider retry policy (up to three retries) and **separate** OPEN-state circuit breakers for (1) pricing/coverage and (2) usage submission. Suggested initial pricing-breaker thresholds remain advisory: five failed pricing requests within 30 seconds, open for 30 seconds, then allow one probe. Tune concurrency and provider rate limits during implementation.
 
-Provider usage submission remains on the existing Kafka path. The usage event gains `correlation_id`, copied from the assignment active when the event is produced. Assignment validation matches `correlation_id` against provider account `externalId` when available; it is not the provider's native `account_id`. Do not add tenant, account, or `correlation_id` as metric labels. Paginate cost reads.
+Provider usage submission remains on the existing Kafka path. The usage event gains `correlation_id`, copied from the assignment active when the event is produced. Assignment validation matches `correlation_id` against provider account `externalId` when available; it is not the provider's native `account_id`. Do not add tenant, account, or `correlation_id` as metric labels.
 
 ## 4.5 Security Considerations
 
-Provider calls stay server-side. Store credentials in the existing Secret mechanism; never return credentials, provider-native account references, contract identifiers, or rate-card identifiers to tenant-facing clients. Redact provider response bodies, invoice and charge lines, bearer tokens, and native account IDs from logs, metrics, traces, and API errors unconditionally. Use stable reason codes and request IDs for diagnostics. Those request IDs are not the billing `correlation_id`. The shared client must never log raw bodies.
+Provider calls stay server-side. Store credentials in the existing Secret mechanism; never return credentials, provider-native account references, contract identifiers, or rate-card identifiers to tenant-facing clients. Redact provider response bodies, bearer tokens, and native account IDs from logs, metrics, traces, and API errors unconditionally. Use stable reason codes and request IDs for diagnostics. Those request IDs are not the billing `correlation_id`. The shared client must never log raw bodies.
 
 Every billing method has an explicit OPA allow-list. Application code also filters every read and write to the caller's authorized tenant and project set. Check catalog visibility before resolving a price. Validate identifiers, currencies, dates, and configuration values at the API boundary. Preserve provider amounts as decimal values and do not execute arbitrary provider formula text.
 
@@ -474,7 +431,6 @@ Do not check the configured service rate card in order to publish a shared or sy
 - **Usage submission:** if billing is configured, **keep submitting usage**. Rates are not required to emit. Deactivating an M360 account does not stop emission; see the inactive-account bullet.
 - **Usage arrives after reassignment:** an emitted event keeps the `correlation_id` it was produced with. Assignment validation matches that value to account `externalId` when available; it does not use `tenant_id` as the account key. OSAC assignment history does not rewrite events already sent.
 - **Provider switch is unsupported this milestone.** One provider URL and Secret. Changing configuration away from M360 is a new config, not a period-boundary migrate. There is no dual-adapter window and no replay into a second provider. In-flight Kafka/DLQ is not drained by this design.
-- **Export retries:** not this increment. If later implemented, use a stable idempotency key so a retry does not create a duplicate export.
 
 ## 4.7 RBAC / Tenancy
 
@@ -484,10 +440,6 @@ Do not check the configured service rate card in order to publish a shared or sy
 | `BillingAccounts.List`; `TenantBillingAssignments.List`, `Get`, `Create`, `Update` | Cloud Provider Admin | Provider-global account list; assignments limited to tenants the admin may manage. |
 | `CatalogPricingInputs.List`; `ProviderRateCardItems.List` | Cloud Provider Admin | Deployment catalog/provider data. |
 | `PricingQueries.Create`; `PriceEstimates.Create`; catalog `List` / `Get` | Tenant Admin; Tenant User; Cloud Provider Admin preview | Tenant callers see only visible catalog items and their own account pricing. Tenant Users can estimate only resources they may provision. Admin previews require an authorized target tenant. |
-| `BillingCosts.List` | Tenant Admin | The caller's tenant and authorized projects. |
-| `BillingCosts.List` | Tenant User | Only resources and projects the caller can access. |
-| `BillingCosts.List` | Cloud Provider Admin | Only an explicitly authorized target tenant. |
-| `BillingInvoices.List` / `Get`; `DraftCharges.List`; `BillingExports.Create` / `Get` | As in the API table | **Not this increment.** Same tenant filters would apply when implemented. |
 
 Cloud Infrastructure Admin installs provider credentials through installer configuration; this is not a separate billing persona or API. Provider switch is unsupported this milestone. OPA allow-lists every method, and application code enforces the tenant/project filters even when OPA permits the role.
 
@@ -499,22 +451,20 @@ Cloud Infrastructure Admin installs provider credentials through installer confi
 
 OSAC-facing services use opaque IDs, normalized status, currency and rate units, and provider-neutral price rows. Provider-specific account and rate-card formats stay behind adapters. Each provider adapter maps OSAC billable components to that provider's query shape and preserves provider-supplied amounts.
 
-Fulfillment and metering may share one M360 HTTP helper module and the same Secret reference, URL, and version. They remain separate processes with **separate circuit breakers**, so a pricing or cost failure cannot open the breaker on usage submission. Fulfillment must not import the metering adapters package. Fulfillment owns billing APIs, authorization, assignments, and provider response mapping. Metering owns Kafka, usage-event translation, retries, and submission. The shared client must not log raw bodies (the current metering adapter putting response bytes into errors is a required fix when that helper is shared).
+Fulfillment and metering may share one M360 HTTP helper module and the same Secret reference, URL, and version. They remain separate processes with **separate circuit breakers**, so a pricing failure cannot open the breaker on usage submission. Fulfillment must not import the metering adapters package. Fulfillment owns billing APIs, authorization, assignments, and provider response mapping. Metering owns Kafka, usage-event translation, retries, and submission. The shared client must not log raw bodies (the current metering adapter putting response bytes into errors is a required fix when that helper is shared).
 
 The time-versioned assignment model records history under a 1:1 active constraint. 1:N account sharing is out of this design. When a provider exposes account `externalId`, assignment validation matches it against `correlation_id`; the Cloud Provider Admin preserves uniqueness between assignment changes. OSAC clients do not see the provider's native field name. No provider change should expose native account or rate-card formats to OSAC clients.
 
 # 5. Interface Changes
 
-New billing methods are defined in fulfillment-service protos; CleanAPI generates their REST surface. Catalog pricing extends the existing VMaaS and CaaS catalog `List` and `Get` responses. The design adds account-assignment persistence, optional provider configuration, and `correlation_id` on the usage event. It does not store provider prices, costs, or invoices. The API and method summary is in §4.3, and the JSON contract is in [openapi.yaml](openapi.yaml).
+New billing methods are defined in fulfillment-service protos; CleanAPI generates their REST surface. Catalog pricing extends the existing VMaaS and CaaS catalog `List` and `Get` responses. The design adds account-assignment persistence, optional provider configuration, and `correlation_id` on the usage event. It does not persist provider-owned financial data. The API and method summary is in §4.3, and the JSON contract is in [openapi.yaml](openapi.yaml).
 
 | Interface change | User-story basis |
 |---|---|
 | Discover accounts and link a tenant through `BillingAccounts` and `TenantBillingAssignments` | Cloud Provider Admin: “I want each tenant associated with a billing account … so that charges land on the correct invoice.” Cloud Infrastructure Admin: “I want to install the billing provider connection as part of the OSAC installation.” |
 | Check OSAC billable values and provider rate coverage with `CatalogPricingInputs` and `ProviderRateCardItems` | Cloud Provider Admin: “I want OSAC to prevent a resource type from being offered for provisioning until every one of its billable components has a rate in the billing system … and to alert me to any component lacking a rate.” This increment covers **metered** components. Non-metered add-ons/licenses/setup fees are deferred. |
 | Enrich VMaaS and CaaS catalog reads and provide tenant-contextual previews | OSAC-3793 Tenant Admin / Tenant User: “I want to see the price of a VMaaS or CaaS catalog item available to my context before provisioning.” BMaaS catalog pricing is out of this design (OSAC-3795). |
-| Provide a selected-configuration prospective estimate | OSAC-3784 Tenant User: “I want to view the estimated cost of the resources I have deployed.” The prospective configuration estimate is an additional agreed design capability; it is distinct from the PRD's latest-calculated-cost view. |
-| Read tenant costs with `BillingCosts` | Tenant Admin: “I want to view my organization's accumulated costs for the current and past billing periods.” |
-| Past invoices, draft charges, and exports | PRD stories remain. **Not this increment.** |
+| Provide a selected-configuration prospective estimate | OSAC-3784 Tenant User: “I want to view the estimated cost of the resources I have deployed.” The prospective configuration estimate is an additional agreed design capability; it describes a selected configuration, not deployed resource usage. |
 
 The provider-status read remains available when billing is disabled. Provider-dependent billing calls return `BILLING_NOT_CONFIGURED`; core catalog and fulfillment methods continue to work without pricing or billing gates. The catalog inventory is OSAC-only and remains available. Billing audit is out of this EP (see §2.2); PRD audit stories are not closed here.
 
@@ -545,9 +495,9 @@ Expose normalized provider status and the last successful **account-API** health
 
 # 8. Impact and Compatibility
 
-The change adds fulfillment billing methods, account-assignment persistence, provider configuration, OPA rules, and optional pricing on existing VMaaS and CaaS catalog methods. BMaaS pricing and gates are out of this design (OSAC-3795). Deployments without a provider keep existing catalog and fulfillment behavior; no billing credentials or provider calls are needed. OSAC does not store provider prices, costs, charges, or invoices.
+The change adds fulfillment billing methods, account-assignment persistence, provider configuration, OPA rules, and optional pricing on existing VMaaS and CaaS catalog methods. BMaaS pricing and gates are out of this design (OSAC-3795). Deployments without a provider keep existing catalog and fulfillment behavior; no billing credentials or provider calls are needed. OSAC does not persist provider-owned financial data.
 
-The usage event gains `correlation_id`. During assignment, fulfillment matches it against the provider account's `externalId`, when available, and verifies uniqueness. The Cloud Provider Admin must revalidate uniqueness before changing an assignment or provider-side `externalId`; OSAC does not monitor uniqueness continuously. Events already produced keep the `correlation_id` they carried. Existing assignments preserve OSAC history, and pre-activation usage is not billed retroactively. Invoice, draft-charge, and export APIs stay in the contract for later work; this increment does not implement them. Billing audit storage and reads are out of this EP.
+The usage event gains `correlation_id`. During assignment, fulfillment matches it against the provider account's `externalId`, when available, and verifies uniqueness. The Cloud Provider Admin must revalidate uniqueness before changing an assignment or provider-side `externalId`; OSAC does not monitor uniqueness continuously. Events already produced keep the `correlation_id` they carried. Existing assignments preserve OSAC history, and pre-activation usage is not billed retroactively. Billing audit storage and reads are out of this EP.
 
 # Graduation Criteria
 
