@@ -6,7 +6,9 @@ info:
     Public fulfillment billing methods for OSAC-3784. JSON field names are
     snake_case. Enum values are protobuf names. Invoice, draft-charge, and
     export operations are part of the contract and are not this increment.
-    The machine-readable paths are under /api/fulfillment/v1.
+    Every enum's *_UNSPECIFIED value means unset; clients do not send it and
+    the server does not use it as a real state. The machine-readable paths are
+    under /api/fulfillment/v1.
 servers:
   - url: /api/fulfillment/v1
 tags:
@@ -140,14 +142,21 @@ paths:
       parameters:
         - name: tenant_id
           in: query
+          description: >
+            Read rates for this tenant's linked billing account. Omit it to
+            read without a tenant-specific contract.
           schema:
             type: string
         - name: service
           in: query
+          description: >
+            Limit rows to one OSAC service, such as compute_instance or
+            cluster_order. Omit it to include every mapped service.
           schema:
             type: string
         - name: currency_code
           in: query
+          description: Limit rows to one ISO-4217 currency.
           schema:
             type: string
             minLength: 3
@@ -216,23 +225,37 @@ paths:
       parameters:
         - name: tenant_id
           in: query
-          description: Required for a Cloud Provider Admin preview.
+          description: >
+            Cloud Provider Admin preview target. Tenant callers omit it and
+            are scoped to their own tenant.
           schema:
             type: string
         - name: from_date
           in: query
           required: true
+          description: >
+            Inclusive period start in YYYY-MM-DD format. This is the provider's
+            billing period, not a calendar period OSAC invents.
           schema:
             type: string
             format: date
         - name: to_date
           in: query
           required: true
+          description: >
+            Inclusive period end in YYYY-MM-DD format. Must be on or after
+            from_date.
           schema:
             type: string
             format: date
         - $ref: "#/components/parameters/offset"
-        - $ref: "#/components/parameters/limit"
+        - name: limit
+          in: query
+          description: Maximum items in the page, from 1 to 100.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
       responses:
         "200":
           description: Costs for the requested period.
@@ -250,17 +273,20 @@ paths:
         - name: tenant_id
           in: query
           required: true
+          description: Tenant whose draft charges are being read.
           schema:
             type: string
         - name: from_date
           in: query
           required: true
+          description: Inclusive start of the requested provider billing period, in YYYY-MM-DD format.
           schema:
             type: string
             format: date
         - name: to_date
           in: query
           required: true
+          description: Inclusive end of the requested provider billing period, in YYYY-MM-DD format.
           schema:
             type: string
             format: date
@@ -282,15 +308,18 @@ paths:
       parameters:
         - name: tenant_id
           in: query
+          description: Cloud Provider Admin target tenant; tenant callers omit it and are scoped to their own tenant.
           schema:
             type: string
         - name: from_date
           in: query
+          description: Inclusive provider billing period start, in YYYY-MM-DD format.
           schema:
             type: string
             format: date
         - name: to_date
           in: query
+          description: Inclusive provider billing period end, in YYYY-MM-DD format.
           schema:
             type: string
             format: date
@@ -313,6 +342,7 @@ paths:
         - $ref: "#/components/parameters/id"
         - name: tenant_id
           in: query
+          description: Tenant authorized to read this invoice.
           schema:
             type: string
       responses:
@@ -352,6 +382,7 @@ paths:
         - name: tenant_id
           in: query
           required: true
+          description: Tenant authorized to create or read this export.
           schema:
             type: string
       responses:
@@ -372,23 +403,32 @@ components:
     offset:
       name: offset
       in: query
+      description: Zero-based index of the first returned item. Defaults to 0.
       schema:
         type: integer
         minimum: 0
+        default: 0
     limit:
       name: limit
       in: query
+      description: >
+        Maximum items in the page. Omitted means the server default. A value
+        of 0 returns size and total with an empty items list.
       schema:
         type: integer
         minimum: 0
     filter:
       name: filter
       in: query
+      description: CEL expression evaluated against each object.
       schema:
         type: string
     order:
       name: order
       in: query
+      description: >
+        Sort expression, for example display_name desc. Ordering is not
+        implemented yet; when omitted, the result order is undefined.
       schema:
         type: string
   schemas:
@@ -398,6 +438,12 @@ components:
       properties:
         state:
           type: string
+          description: >
+            Reachability of the account API probed by this adapter, not the
+            health of pricing, costs, or usage delivery. NOT_CONFIGURED means
+            billing is off and catalog/launch billing gates are skipped;
+            AVAILABLE means the account API answered; UNAVAILABLE means it did
+            not. UNSPECIFIED is unset and is not a reported state.
           enum:
             - BILLING_PROVIDER_STATE_UNSPECIFIED
             - BILLING_PROVIDER_STATE_NOT_CONFIGURED
@@ -405,13 +451,25 @@ components:
             - BILLING_PROVIDER_STATE_UNAVAILABLE
         provider_key:
           type: string
+          description: Configured billing adapter, such as m360; empty when billing is not configured.
           example: m360
         message:
           type: string
+          description: Short administrator-facing text, not a provider response body.
         supported_capabilities:
           type: array
+          description: >
+            Operations implemented by the adapter. Listing a capability means
+            the operation exists, not that calls to it are currently healthy.
           items:
             type: string
+            description: >
+              UNSPECIFIED is unset. PRICING covers rate cards, catalog prices,
+              coverage checks, PricingQueries, and PriceEstimates. COSTS covers
+              BillingCosts.List. INVOICES covers BillingInvoices.List and Get.
+              DRAFT_CHARGES covers DraftCharges.List. EXPORTS covers
+              BillingExports.Create and Get. The latter three are not this
+              increment.
             enum:
               - BILLING_PROVIDER_CAPABILITY_UNSPECIFIED
               - BILLING_PROVIDER_CAPABILITY_PRICING
@@ -421,9 +479,15 @@ components:
               - BILLING_PROVIDER_CAPABILITY_EXPORTS
         last_successful_check:
           type: string
+          description: Time of the last successful account-API probe; omitted when no probe has succeeded.
           format: date-time
         usage_delivery_state:
           type: string
+          description: >
+            Whether metering usage is reaching the provider. This increment
+            always reports UNKNOWN because fulfillment does not read metering
+            lag or the dead-letter queue. AVAILABLE and UNAVAILABLE are reserved
+            until fulfillment can observe delivery; UNSPECIFIED is unset.
           enum:
             - BILLING_USAGE_DELIVERY_STATE_UNSPECIFIED
             - BILLING_USAGE_DELIVERY_STATE_UNKNOWN
@@ -438,14 +502,26 @@ components:
           description: OSAC id. Not the provider account id.
         provider_key:
           type: string
+          description: Adapter that discovered the account, such as m360.
         display_name:
           type: string
+          description: Provider-supplied account label.
         base_currency:
           type: string
+          description: >
+            ISO-4217 currency used for this account's prices and costs. Empty
+            when the provider did not supply it.
           minLength: 3
           maxLength: 3
         state:
           type: string
+          description: >
+            Last normalized provider-account state. ACTIVE accounts can be
+            linked and used for new priced publish and launch. INACTIVE accounts
+            cannot be newly linked or used for gated publish and launch, but
+            existing resources are not stopped and usage submission continues.
+            UNKNOWN means OSAC could not classify the state. UNSPECIFIED is
+            unset and is not a reported status.
           enum:
             - BILLING_ACCOUNT_STATE_UNSPECIFIED
             - BILLING_ACCOUNT_STATE_ACTIVE
@@ -453,6 +529,7 @@ components:
             - BILLING_ACCOUNT_STATE_UNKNOWN
         status_observed_at:
           type: string
+          description: Time OSAC last read the normalized account state.
           format: date-time
         correlation_id:
           type: string
@@ -466,32 +543,49 @@ components:
       properties:
         size:
           type: integer
+          description: Number of items in this page.
         total:
           type: integer
+          description: Number of matching items, ignoring offset and limit.
         items:
           type: array
+          description: Discovered billing accounts; an empty list does not mean billing is disabled.
           items:
             $ref: "#/components/schemas/BillingAccount"
     TenantBillingAssignment:
       type: object
+      description: >
+        Time-bounded association between an OSAC tenant and billing account.
+        Create or update is Cloud Provider Admin-only.
       properties:
         id:
           type: string
+          description: OSAC id of this assignment interval; a later link creates a new id.
         metadata:
           $ref: "#/components/schemas/Metadata"
         spec:
           type: object
+          description: Desired tenant and billing-account association for this interval.
           required: [tenant_id, billing_account_id]
           properties:
             tenant_id:
               type: string
+              description: OSAC tenant billed by this interval; not an authorization credential or correlation_id.
             billing_account_id:
               type: string
+              description: BillingAccount.id assigned to the tenant for this interval.
         status:
           type: object
+          description: Server-observed provider-link state and assignment interval.
           properties:
             connection_state:
               type: string
+              description: >
+                Whether OSAC verified the provider correlation_id. PENDING means
+                the value is missing or not confirmed by read-back and gated
+                publish/launch fail with BILLING_ACCOUNT_UNAVAILABLE. CONNECTED
+                means the stored value was verified. FAILED means the link was
+                rejected, including ACCOUNT_ALREADY_BOUND. UNSPECIFIED is unset.
               enum:
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_UNSPECIFIED
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING
@@ -499,23 +593,29 @@ components:
                 - TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_FAILED
             effective_from:
               type: string
+              description: Time this assignment interval became active.
               format: date-time
             effective_to:
               type: string
+              description: Time this assignment interval stopped; omitted while it is current.
               format: date-time
               nullable: true
             message:
               type: string
+              description: Optional failure detail, omitted on success.
     TenantBillingAssignmentList:
       type: object
       required: [size, total, items]
       properties:
         size:
           type: integer
+          description: Number of items in this page.
         total:
           type: integer
+          description: Number of matching items, ignoring offset and limit.
         items:
           type: array
+          description: Current and historical assignment intervals.
           items:
             $ref: "#/components/schemas/TenantBillingAssignment"
     Metadata:
@@ -523,46 +623,65 @@ components:
       properties:
         name:
           type: string
+          description: Object name, unique in its scope and formatted as an RFC 1123 label.
         tenant:
           type: string
+          description: Tenant ownership metadata for a tenant-owned assignment object.
     CatalogPricingInput:
       type: object
       required: [service, dimension, value]
       properties:
         service:
           type: string
+          description: OSAC service being priced; this increment uses compute_instance or cluster.
           example: compute_instance
         dimension:
           type: string
+          description: >
+            Metered dimension name. VMaaS uses instance_type and may use
+            additional_disk_size_gib or additional_storage_tier for default
+            extra disks. CaaS uses baremetal_instance_type and node_count.
           example: instance_type
         value:
           type: string
+          description: One locked or default catalog value for the dimension.
           example: small
         accepts_any_value:
           type: boolean
+          description: >
+            True when the catalog item allows a value not listed in its own
+            rows; false when it is fixed or selected from known defaults.
         catalog_items:
           type: array
+          description: Catalog items that use or offer this metered value.
           items:
             type: object
             properties:
               id:
                 type: string
+                description: OSAC catalog item id.
               name:
                 type: string
+                description: Catalog item name.
               title:
                 type: string
+                description: Catalog item title shown to users.
               published:
                 type: boolean
+                description: True for a published item; draft items are included with false.
     CatalogPricingInputList:
       type: object
       required: [size, total, items]
       properties:
         size:
           type: integer
+          description: Number of items in this page.
         total:
           type: integer
+          description: Number of matching items, ignoring offset and limit.
         items:
           type: array
+          description: Metered catalog values and the catalog items that use or offer them.
           items:
             $ref: "#/components/schemas/CatalogPricingInput"
     ProviderRateCardItem:
@@ -571,78 +690,107 @@ components:
       properties:
         service:
           type: string
+          description: OSAC service this provider rule prices.
         currency_code:
           type: string
+          description: ISO-4217 currency of rate.amount.
+          minLength: 3
+          maxLength: 3
         source:
           type: string
           description: >
             CONTRACT is a rate for one account. DEFAULT is the configured
             service rate card, used when that account has no contract rate
-            for the service.
+            for the service only when the provider confirms no contract rate
+            applies. A failed or ambiguous contract lookup is an error and does
+            not select DEFAULT. UNSPECIFIED is unset and is not a real card.
           enum:
             - BILLING_RATE_CARD_SOURCE_UNSPECIFIED
             - BILLING_RATE_CARD_SOURCE_DEFAULT
             - BILLING_RATE_CARD_SOURCE_CONTRACT
         resource_conditions:
           type: array
+          description: Match conditions for this rate; all conditions on a row apply together.
           items:
             type: object
             properties:
               dimension:
                 type: string
+                description: Metered dimension name, using the same names as CatalogPricingInputs.
               operator:
                 type: string
+                description: >
+                  ANY matches every value. EQUALS requires value to match.
+                  UNSPECIFIED is unset and is not a real match operator.
                 enum:
                   - BILLING_RATE_MATCH_OPERATOR_UNSPECIFIED
                   - BILLING_RATE_MATCH_OPERATOR_ANY
                   - BILLING_RATE_MATCH_OPERATOR_EQUALS
               value:
                 type: string
+                description: Comparison value for EQUALS; empty for ANY.
         rate:
           type: object
           required: [amount, unit]
+          description: Provider-supplied amount and unit; OSAC preserves both.
           properties:
             amount:
               type: string
+              description: Provider rate as a decimal string; OSAC does not round it.
             unit:
               type: string
+              description: Provider rate unit, such as hour or month; OSAC does not rename it.
         catalog_item_matches:
           type: array
+          description: OSAC catalog items whose default configuration this rule can price.
           items:
             type: string
+            description: OSAC catalog item name.
     ProviderRateCardItemList:
       type: object
       required: [size, total, items]
       properties:
         size:
           type: integer
+          description: Number of items in this page.
         total:
           type: integer
+          description: Number of matching items, ignoring offset and limit.
         items:
           type: array
+          description: Provider-neutral rate-card rows matching the requested filters.
           items:
             $ref: "#/components/schemas/ProviderRateCardItem"
     BillingPricingConfiguration:
       type: object
+      description: Exactly one selected resource spec for pricing evaluation.
       properties:
         project:
           type: string
+          description: >
+            Project the caller would provision into. Tenant callers must be
+            authorized to use it. Omitted means the tenant's default project.
         compute_instance:
           type: object
-          description: Selected VMaaS spec. Set this or cluster or bare_metal_instance, not more than one.
+          description: Selected VMaaS spec; set this or cluster or bare_metal_instance, not more than one.
           properties:
             catalog_item:
               type: object
+              description: Selected catalog item.
               properties:
                 name:
                   type: string
+                  description: Catalog item name.
             instance_type:
               type: object
+              description: Selected VM instance type.
               properties:
                 name:
                   type: string
+                  description: Instance type name.
         cluster:
           type: object
+          description: Selected CaaS cluster spec.
         bare_metal_instance:
           type: object
           description: BMaaS pricing is out of this design.
@@ -660,17 +808,29 @@ components:
       properties:
         currency_code:
           type: string
+          description: Linked billing account's three-letter ISO-4217 currency.
+          minLength: 3
+          maxLength: 3
         components:
           type: array
+          description: Component-level rate and coverage results for the selected configuration.
           items:
             type: object
             properties:
               service:
                 type: string
+                description: OSAC service for this component; compute_instance or cluster in this increment.
               description:
                 type: string
+                description: Short component label, such as the selected instance type name.
               coverage:
                 type: string
+                description: >
+                  COVERED means a current rate matched. GAP means no rate exists
+                  for this metered component and is not zero. STALE means a
+                  retained amount is not a current read and cannot pass a gate.
+                  UNAVAILABLE means the rate could not be read. UNSPECIFIED is
+                  unset and is not a result.
                 enum:
                   - PRICING_COVERAGE_STATE_UNSPECIFIED
                   - PRICING_COVERAGE_STATE_COVERED
@@ -679,14 +839,24 @@ components:
                   - PRICING_COVERAGE_STATE_UNAVAILABLE
               amount:
                 type: string
+                description: >
+                  Provider rate as a decimal string, present only for COVERED
+                  and STALE. OSAC does not round it.
               unit:
                 type: string
+                description: >
+                  Provider rate unit. API version 1 constrains this value to
+                  second. Present when amount is present; omitted when coverage
+                  is GAP or UNAVAILABLE.
+                enum: [second]
+                example: second
     PriceEstimateRequest:
       type: object
       required: [configuration]
       properties:
         tenant_id:
           type: string
+          description: Cloud Provider Admin preview target; tenant callers omit it and are scoped to their own tenant.
         configuration:
           $ref: "#/components/schemas/BillingPricingConfiguration"
     PriceEstimateResponse:
@@ -694,29 +864,51 @@ components:
       properties:
         currency_code:
           type: string
+          description: Linked billing account's three-letter ISO-4217 currency.
+          minLength: 3
+          maxLength: 3
         components:
           type: array
+          description: Recurring price result for each metered component in the selected configuration.
           items:
             type: object
             properties:
               service:
                 type: string
+                description: OSAC service for this component; compute_instance or cluster in this increment.
               description:
                 type: string
+                description: Short component label, such as the selected instance type name.
               rate_amount:
                 type: string
+                description: Provider rate, preserved as a decimal string without OSAC rounding.
               rate_unit:
                 type: string
+                description: Provider-supplied rate unit, such as hour or month; OSAC does not rename it.
               hourly_amount:
                 type: string
+                description: >
+                  OSAC-derived hourly equivalent when rate_unit is time-based;
+                  omitted otherwise. Decimal string, not rounded by OSAC.
               monthly_amount:
                 type: string
+                description: >
+                  OSAC-derived monthly equivalent. For hourly rates this is
+                  hourly_amount multiplied by 730; omitted when the rate is not
+                  time-based. The 730-hour month is an OSAC convention, not a
+                  provider bill. Decimal string, not rounded by OSAC.
         hourly_amount:
           type: string
+          description: Sum of component hourly amounts, as a decimal string; OSAC does not round it.
         monthly_amount:
           type: string
+          description: Sum of component monthly amounts, as a decimal string; OSAC does not round it.
         status:
           type: string
+          description: >
+            CURRENT means every component used a current rate and is the only
+            successful value. STALE is reserved so stale rates are not reported
+            as current. UNSPECIFIED is unset and is not a successful estimate.
           enum:
             - PRICE_ESTIMATE_STATUS_UNSPECIFIED
             - PRICE_ESTIMATE_STATUS_CURRENT
@@ -727,7 +919,10 @@ components:
       properties:
         id:
           type: string
-          description: Stable id the UI uses to identify this priced component.
+          description: >
+            Stable id the UI uses to identify this priced component. It has the
+            form {service}.{attribute}.{value}, for example
+            compute_instance.instance_type.small.
           example: compute_instance.instance_type.small
         attribute:
           type: string
@@ -735,12 +930,15 @@ components:
           example: instance_type
         amount:
           type: string
+          description: Provider rate for this attribute's default value, as a decimal string; OSAC does not round it.
           example: "4.50"
         unit:
           type: string
+          description: Provider unit, such as hour.
           example: hour
         description:
           type: string
+          description: Short label, usually the selected value rather than a generic resource name.
     CatalogItemPricing:
       type: object
       description: >
@@ -749,6 +947,12 @@ components:
       properties:
         status:
           type: string
+          description: >
+            CURRENT means the provider read is fresh and as_of is set; the price
+            may be shown while browsing, but gates perform a fresh check. STALE
+            means a retained amount is available for browsing but cannot pass a
+            billing gate and has no as_of. UNAVAILABLE means no amount and no
+            as_of. UNSPECIFIED means this is not treated as a price.
           enum:
             - CATALOG_PRICING_STATUS_UNSPECIFIED
             - CATALOG_PRICING_STATUS_CURRENT
@@ -756,12 +960,22 @@ components:
             - CATALOG_PRICING_STATUS_UNAVAILABLE
         currency_code:
           type: string
+          description: >
+            Linked billing account currency. Omitted when status is UNAVAILABLE
+            and no currency was known. When present, it is a three-letter
+            ISO-4217 code.
+          minLength: 3
+          maxLength: 3
         components:
           type: array
+          description: >
+            One entry per priced metered part of the default configuration;
+            empty when status is UNAVAILABLE.
           items:
             $ref: "#/components/schemas/CatalogPriceComponent"
         price_may_vary:
           type: boolean
+          description: True when an editable billable field can change the price; false when priced values are locked.
         as_of:
           type: string
           format: date-time
@@ -772,20 +986,37 @@ components:
       properties:
         project_id:
           type: string
+          description: >
+            OSAC project. An empty string means the tenant's default project.
+            Omitted when the provider did not attribute a project. Rows outside
+            the caller's visibility are skipped without failing the list.
         resource_id:
           type: string
+          description: OSAC resource id; omitted when the provider did not attribute a resource.
         service:
           type: string
+          description: OSAC service priced, such as compute_instance or cluster.
         amount:
           type: string
+          description: >
+            Provider-calculated total for this service, project, and resource
+            over the period, as a decimal string. OSAC does not round it.
         currency_code:
           type: string
+          description: Linked account's three-letter ISO-4217 currency.
+          minLength: 3
+          maxLength: 3
         period_start:
           type: string
+          description: Start of the period covered, in YYYY-MM-DD format.
+          format: date
         period_end:
           type: string
+          description: End of the period covered, in YYYY-MM-DD format.
+          format: date
         as_of:
           type: string
+          description: Time OSAC fetched this result; present on a successful read.
           format: date-time
     BillingCostList:
       type: object
@@ -793,10 +1024,13 @@ components:
       properties:
         size:
           type: integer
+          description: Number of items in this page.
         total:
           type: integer
+          description: Number of matching items, ignoring offset and limit.
         items:
           type: array
+          description: Provider-calculated cost rows visible to the caller.
           items:
             $ref: "#/components/schemas/BillingCost"
     DraftCharge:
@@ -804,31 +1038,47 @@ components:
       properties:
         id:
           type: string
+          description: Provider charge identifier.
         description:
           type: string
+          description: Provider description of the uninvoiced charge.
         service:
           type: string
+          description: OSAC service associated with the charge.
         project_id:
           type: string
+          description: OSAC project id when attributed by the provider.
         resource_id:
           type: string
+          description: OSAC resource id when attributed by the provider.
         amount:
           type: string
+          description: Provider charge amount as a decimal string; OSAC does not round it.
         currency_code:
           type: string
+          description: Three-letter ISO-4217 currency of the provider charge.
+          minLength: 3
+          maxLength: 3
         period_start:
           type: string
+          description: Start of the provider billing period covered, in YYYY-MM-DD format.
+          format: date
         period_end:
           type: string
+          description: End of the provider billing period covered, in YYYY-MM-DD format.
+          format: date
     DraftChargeList:
       type: object
       properties:
         size:
           type: integer
+          description: Number of items in this page.
         total:
           type: integer
+          description: Number of matching items, ignoring offset and limit.
         items:
           type: array
+          description: Uninvoiced provider charge rows.
           items:
             $ref: "#/components/schemas/DraftCharge"
     BillingInvoiceLine:
@@ -836,36 +1086,101 @@ components:
       properties:
         description:
           type: string
+          description: Provider description of this invoice line.
+        service_name:
+          type: string
+          description: Provider service name for the invoice line.
         service_code:
           type: string
+          description: Provider service code for the invoice line.
+        volume:
+          type: string
+          description: Provider-reported quantity for the invoice line.
+        rate_per_unit:
+          type: string
+          description: Provider-reported rate per unit as a decimal string; OSAC does not round it.
         amount:
           type: string
+          description: Provider line amount as a decimal string; OSAC does not round it.
+        tax_amount:
+          type: string
+          description: Provider line tax amount as a decimal string; OSAC does not round it.
+        balance:
+          type: string
+          description: Provider line balance as a decimal string; OSAC does not round it.
+        charge_type:
+          type: string
+          description: Provider charge type; OSAC does not define an enum.
+        price_method:
+          type: string
+          description: Provider price method; OSAC does not define an enum.
         currency_code:
           type: string
+          description: Three-letter ISO-4217 currency of the invoice line.
+          minLength: 3
+          maxLength: 3
         period_start:
           type: string
+          description: Start of the line's provider billing period, in YYYY-MM-DD format.
+          format: date
         period_end:
           type: string
+          description: End of the line's provider billing period, in YYYY-MM-DD format.
+          format: date
     BillingInvoice:
       type: object
       properties:
         id:
           type: string
+          description: Invoice number; not the provider's invoice record id.
         invoice_number:
           type: string
+          description: Provider invoice number.
         invoice_date:
           type: string
+          description: Provider invoice date.
+          format: date
+        status:
+          type: string
+          description: Provider invoice status string; OSAC does not define an enum.
+        type:
+          type: string
+          description: Provider invoice type string; OSAC does not define an enum.
         amount:
           type: string
+          description: Provider invoice amount as a decimal string; OSAC does not round it.
+        tax_amount:
+          type: string
+          description: Provider invoice tax amount as a decimal string; OSAC does not round it.
+        balance:
+          type: string
+          description: Provider invoice balance as a decimal string; OSAC does not round it.
         currency_code:
           type: string
+          description: Three-letter ISO-4217 currency of the invoice.
+          minLength: 3
+          maxLength: 3
+        due_date:
+          type: string
+          description: Provider invoice due date.
+          format: date
         period_start:
           type: string
+          description: Start of the provider billing period, in YYYY-MM-DD format.
+          format: date
         period_end:
           type: string
+          description: End of the provider billing period, in YYYY-MM-DD format.
+          format: date
+        payment_status:
+          type: string
+          description: Provider payment status string; OSAC does not define an enum.
+        approval_status:
+          type: string
+          description: Provider approval status string; OSAC does not define an enum.
         items:
           type: array
-          description: Present on Get. Absent on List.
+          description: Provider invoice lines; present on Get and absent on List.
           items:
             $ref: "#/components/schemas/BillingInvoiceLine"
     BillingInvoiceList:
@@ -873,10 +1188,13 @@ components:
       properties:
         size:
           type: integer
+          description: Number of items in this page.
         total:
           type: integer
+          description: Number of matching items, ignoring offset and limit.
         items:
           type: array
+          description: Invoice headers; line items are returned by Get.
           items:
             $ref: "#/components/schemas/BillingInvoice"
     BillingExportCreateRequest:
@@ -885,27 +1203,41 @@ components:
       properties:
         tenant_id:
           type: string
+          description: Tenant whose billing period is being exported.
         from_date:
           type: string
+          description: Inclusive billing period start, in YYYY-MM-DD format.
           format: date
         to_date:
           type: string
+          description: Inclusive billing period end, in YYYY-MM-DD format.
           format: date
         idempotency_key:
           type: string
+          description: Reuse this key to retry the same export without creating a duplicate.
     BillingExport:
       type: object
       properties:
         id:
           type: string
+          description: OSAC export operation id.
         tenant_id:
           type: string
+          description: Tenant whose billing data is exported.
         from_date:
           type: string
+          description: Inclusive billing period start.
+          format: date
         to_date:
           type: string
+          description: Inclusive billing period end.
+          format: date
         state:
           type: string
+          description: >
+            PENDING means accepted but not started. RUNNING means the provider
+            export is in progress. SUCCEEDED means it finished. FAILED means
+            it failed. UNSPECIFIED is unset and is not a reported state.
           enum:
             - BILLING_EXPORT_STATE_UNSPECIFIED
             - BILLING_EXPORT_STATE_PENDING
@@ -914,7 +1246,9 @@ components:
             - BILLING_EXPORT_STATE_FAILED
         created_at:
           type: string
+          description: Time the export was created.
           format: date-time
         completed_at:
           type: string
+          description: Time the export completed; omitted before completion.
           format: date-time

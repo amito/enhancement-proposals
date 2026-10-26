@@ -2,7 +2,7 @@
 title: osac-billing-integration
 authors: amoren@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-22
+last-updated: 2026-10-26
 tracking-link: https://redhat.atlassian.net/browse/OSAC-3784
 prd: https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-3784-billing-integration-mvp/prd.md
 see-also: https://redhat.atlassian.net/browse/OSAC-3793
@@ -108,7 +108,7 @@ OSAC does not create billing accounts.
 
 1. The Cloud Provider Admin creates the account in the billing provider and sets `correlation_id` once on that account. `correlation_id` is a provider-agnostic id. It is not the OSAC tenant id, and it is not the provider's native account id.
 2. With billing configured, fulfillment discovers accounts through the provider list API, copies `correlation_id` onto `billing_account`, and exposes the rows as `BillingAccounts.List`. OSAC does not generate `correlation_id` and does not set it to the tenant id.
-3. The Cloud Provider Admin assigns a tenant with `TenantBillingAssignments.Create` / `Update`.
+3. The Cloud Provider Admin assigns a tenant to a billing account with `TenantBillingAssignments.Create` / `Update`.
 4. Enabling billing does not auto-create an account or assignment per existing tenant.
 5. No assignment, or an assignment that is not `CONNECTED` (including `PENDING`), fails gated publish/launch with `BILLING_ACCOUNT_UNAVAILABLE`, not `BILLING_COVERAGE_GAP`.
 6. Each metering event for that tenant includes the copied `correlation_id`. The provider later attributes rated transactions with `account_id = correlation_id`.
@@ -179,7 +179,7 @@ The public JSON for every method below is in [openapi.yaml](openapi.yaml). Examp
 | `TenantBillingAssignments.List`, `Get`, `Create`, `Update` | Cloud Provider Admin | Read or change a tenant's time-versioned account assignment. Enforce the current 1:1 rule. Linking follows the read-before-write and verified-read-back protocol in §4.2. |
 | `CatalogPricingInputs.List` | Cloud Provider Admin | List **metered** billable dimensions and all default or selectable values in draft and published catalog items, with the items that use or offer each value. Available when billing is disabled. Non-metered components are deferred. |
 | `ProviderRateCardItems.List` | Cloud Provider Admin | Return provider rules as currency-specific, provider-neutral rows for the Rates UI. Preserve match conditions and rate unit; do not return raw provider payloads. With a tenant context, use that account's contract rate when present, and the configured service rate card only when the provider confirms no contract rate applies for that service. |
-| `PricingQueries.Create` | Authorized tenant caller or Cloud Provider Admin preview | Evaluate a declarative resource configuration and return component-level price and coverage results. Coverage means the provider has a rate for each required **metered** billable component. Synchronous; not stored. A configured provider is required. |
+| `PricingQueries.Create` | Authorized tenant caller or Cloud Provider Admin preview | Evaluate a declarative resource configuration and report whether the configured provider has rates for all required **metered** components, with component-level price and coverage results. Synchronous; not stored. A configured provider is required. |
 | `PriceEstimates.Create` | Authorized tenant caller or Cloud Provider Admin preview | Return a prospective recurring estimate in the account currency and provider rate unit. Not a charge or invoice. Preserve the provider amount and unit; label any 730-hour monthly projection as OSAC-derived. A configured provider is required. |
 | Existing VMaaS and CaaS catalog `List` / `Get` methods | Callers already authorized to view the catalog item | Add optional pricing for the item's default configuration when a provider is configured. That is one price for the locked or default billable values, not a price for every editable choice. Use the existing catalog methods; do not create a parallel catalog API. |
 | `BillingCosts.List` | Tenant Admin; Tenant User for visible resources/projects; Cloud Provider Admin for assigned tenants | Return provider-calculated costs for the request `from_date`/`to_date` (the provider's billing period; OSAC does not invent a calendar). Group by service, resource, and project when those ids are on the line. Nested project visibility: skip rows the caller cannot see; do not fail the whole list on one unattributed line. Successful reads include `as_of` (OSAC fetch time). Under 1:1, if M360 omits tenant on a line, attribute it to the linked tenant; drop lines whose tenant id is present and differs. No account-balance API. |
@@ -189,22 +189,7 @@ The public JSON for every method below is in [openapi.yaml](openapi.yaml). Examp
 
 ### Request and response formats
 
-Every enum below includes a `*_UNSPECIFIED` value. That value means the field was not set. Clients do not send it, and the server does not use it as a real state.
-
-Decimal money fields (`amount`, `rate.amount`, `rate_amount`, `hourly_amount`, `monthly_amount`) are decimal strings. OSAC does not round them. `currency_code` and `base_currency` are ISO-4217 codes, three letters, such as `USD`.
-
-`service` is an OSAC service name, not a provider code. In this increment the priced services are `compute_instance` (VMaaS) and `cluster` (CaaS).
-
-List methods share these query parameters, except where a method lists a tighter set:
-
-| Field | Meaning |
-|---|---|
-| `offset` | Zero-based index of the first returned item. Default 0. |
-| `limit` | Maximum items in this page. Omitted means the server default. `0` returns `size` and `total` with an empty `items` list. |
-| `filter` | CEL expression evaluated against each object. |
-| `order` | Sort expression, for example `display_name desc`. The field is defined. Ordering is not implemented yet, so an omitted `order` leaves the order undefined. |
-
-List responses share `size` (items in this page) and `total` (matches, ignoring `offset` and `limit`).
+The request and response schemas, field descriptions, enum meanings, and shared list parameters are defined in [openapi.yaml](openapi.yaml). The examples below illustrate representative requests and responses.
 
 #### `BillingProviderStatuses.Get`
 
@@ -223,44 +208,6 @@ List responses share `size` (items in this page) and `total` (matches, ignoring 
   "usage_delivery_state": "BILLING_USAGE_DELIVERY_STATE_UNKNOWN"
 }
 ```
-
-| Field | Meaning |
-|---|---|
-| `state` | Reachability of the account API this adapter probes. Not the health of pricing, costs, or usage delivery. |
-| `provider_key` | Which adapter is configured. `m360` in this increment. Empty when billing is not configured. |
-| `message` | Short admin text. Empty when there is nothing to add. Not a provider response body. |
-| `supported_capabilities` | Operations this adapter implements. A listed capability means the operation exists. It does not mean that call is succeeding right now. |
-| `last_successful_check` | Time of the last successful account-API probe. Omitted when no probe has succeeded. |
-| `usage_delivery_state` | Whether metering usage is reaching the provider. This increment always returns `UNKNOWN`, because fulfillment does not read metering lag or the dead-letter queue. |
-
-`state`:
-
-| Value | Meaning |
-|---|---|
-| `BILLING_PROVIDER_STATE_UNSPECIFIED` | Unset. Not a reported status. |
-| `BILLING_PROVIDER_STATE_NOT_CONFIGURED` | Billing is off. This is the UI signal to skip billing. Catalog and launch continue. |
-| `BILLING_PROVIDER_STATE_AVAILABLE` | The account API answered the probe. |
-| `BILLING_PROVIDER_STATE_UNAVAILABLE` | Billing is configured and the account API did not answer the probe. |
-
-`supported_capabilities`:
-
-| Value | Meaning |
-|---|---|
-| `BILLING_PROVIDER_CAPABILITY_UNSPECIFIED` | Unset. Ignore it. |
-| `BILLING_PROVIDER_CAPABILITY_PRICING` | Rate cards, catalog prices, coverage checks, `PricingQueries`, and `PriceEstimates`. |
-| `BILLING_PROVIDER_CAPABILITY_COSTS` | `BillingCosts.List`. |
-| `BILLING_PROVIDER_CAPABILITY_INVOICES` | `BillingInvoices.List` and `Get`. Not this increment. |
-| `BILLING_PROVIDER_CAPABILITY_DRAFT_CHARGES` | `DraftCharges.List`. Not this increment. |
-| `BILLING_PROVIDER_CAPABILITY_EXPORTS` | `BillingExports.Create` and `Get`. Not this increment. |
-
-`usage_delivery_state`:
-
-| Value | Meaning |
-|---|---|
-| `BILLING_USAGE_DELIVERY_STATE_UNSPECIFIED` | Unset. Not a reported status. |
-| `BILLING_USAGE_DELIVERY_STATE_UNKNOWN` | Fulfillment cannot tell. This is the only value this increment returns. |
-| `BILLING_USAGE_DELIVERY_STATE_AVAILABLE` | Usage is reaching the provider. Reserved until fulfillment can observe metering. |
-| `BILLING_USAGE_DELIVERY_STATE_UNAVAILABLE` | Usage is not reaching the provider. Reserved until fulfillment can observe metering. |
 
 #### `BillingAccounts.List`
 
@@ -283,25 +230,6 @@ List responses share `size` (items in this page) and `total` (matches, ignoring 
   ]
 }
 ```
-
-| Field | Meaning |
-|---|---|
-| `id` | OSAC id for this account. Assignments use this value. It is not the provider account id. |
-| `provider_key` | Adapter that discovered the account. `m360` in this increment. |
-| `display_name` | Label supplied by the provider. |
-| `base_currency` | Account currency. Prices and costs for this account use this code. Empty if the provider did not supply one. |
-| `state` | Last normalized account state. See the table below. |
-| `status_observed_at` | Time OSAC last read that state. |
-| `correlation_id` | Attribution id copied from the provider account. Not the OSAC tenant id. Empty until the provider account has one. Usage events carry this value. The provider matches rated transactions with `account_id = correlation_id`. |
-
-`state`:
-
-| Value | Meaning |
-|---|---|
-| `BILLING_ACCOUNT_STATE_UNSPECIFIED` | Unset. Not a reported status. |
-| `BILLING_ACCOUNT_STATE_ACTIVE` | The provider account can be linked and used for new priced publish and launch. |
-| `BILLING_ACCOUNT_STATE_INACTIVE` | The provider account is not usable for a new link or for gated publish and launch. Existing resources are not stopped. Usage submission continues. |
-| `BILLING_ACCOUNT_STATE_UNKNOWN` | OSAC could not classify the provider state. |
 
 An empty `items` list means no accounts were discovered. It does not mean billing is disabled. Billing off is `BILLING_PROVIDER_STATE_NOT_CONFIGURED`.
 
@@ -326,26 +254,6 @@ Create and update send the assignment object. The caller sets `metadata.name` an
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `id` | OSAC id of this assignment interval. A later link for the same tenant is a new id. |
-| `metadata.name` | Object name, unique in its scope. RFC 1123 label. |
-| `spec.tenant_id` | OSAC tenant this interval bills. Not an authorization credential, and not `correlation_id`. |
-| `spec.billing_account_id` | `BillingAccount.id` for this interval. |
-| `status.connection_state` | Whether OSAC has verified `correlation_id` on the provider account. See the table below. |
-| `status.effective_from` | When this interval became the active link. |
-| `status.effective_to` | When this interval stopped. Omitted while it is the current link. |
-| `status.message` | Optional failure text, for example why the link stayed `PENDING` or became `FAILED`. Omitted on success. |
-
-`connection_state`:
-
-| Value | Meaning |
-|---|---|
-| `TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_UNSPECIFIED` | Unset. Not a reported status. |
-| `TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING` | The provider `correlation_id` is missing or not yet confirmed by read-back. Gated publish and launch fail with `BILLING_ACCOUNT_UNAVAILABLE`. |
-| `TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_CONNECTED` | Read-back shows the same `correlation_id` OSAC stored for this account. |
-| `TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_FAILED` | The link was rejected, including `ACCOUNT_ALREADY_BOUND` when the provider value differs and must not be overwritten. |
-
 #### `CatalogPricingInputs.List`
 
 `GET /api/fulfillment/v1/billing/catalog_pricing_inputs`, with the shared list query parameters. This is an OSAC inventory of metered catalog values, not a price and not a second catalog. It is available when billing is off. Non-metered add-ons, licenses, and setup fees are not in this list.
@@ -368,27 +276,9 @@ Create and update send the assignment object. The caller sets `metadata.name` an
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `service` | `compute_instance` or `cluster`. |
-| `dimension` | Metered dimension name. VMaaS uses `instance_type`. Extra disks, when the default configuration has them, use `additional_disk_size_gib` and `additional_storage_tier`. CaaS uses `baremetal_instance_type` and `node_count`. |
-| `value` | One locked or default catalog value for that dimension, such as `small`. |
-| `accepts_any_value` | `true` when a catalog item lets the user choose a value that is not listed as its own row. `false` when the value is fixed or chosen from known defaults. |
-| `catalog_items[].id` | OSAC catalog item id. |
-| `catalog_items[].name` | Catalog item name. |
-| `catalog_items[].title` | Catalog item title shown to users. |
-| `catalog_items[].published` | `true` when that item is published. Draft items are included with `false`. |
-
 #### `ProviderRateCardItems.List`
 
 `GET /api/fulfillment/v1/billing/provider_rate_card_items`.
-
-| Query field | Meaning |
-|---|---|
-| `tenant_id` | Price that tenant's linked account. Omit it to read without a tenant contract. |
-| `service` | Limit rows to one OSAC service, `compute_instance` or `cluster_order`. Omit it for every mapped service. |
-| `currency_code` | Limit rows to one ISO-4217 currency. |
-| `offset`, `limit`, `filter`, `order` | Shared list parameters. |
 
 This response is the Cloud Provider Admin Rates UI payload. It is not a catalog-card price. The UI does not match these rules or sum them. Catalog list and detail, and the provision wizard, get evaluated prices from catalog `List`/`Get`, or from `PricingQueries` / `PriceEstimates` when the user changes the configuration.
 
@@ -417,35 +307,6 @@ VMaaS is billed on `instance_type`. Image and boot disk appear in `resource_cond
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `service` | OSAC service this rule prices. |
-| `currency_code` | Currency of `rate.amount`. |
-| `source` | Which card the row came from. See the table below. |
-| `resource_conditions` | Match rules for one rate. All conditions on the row apply together. |
-| `resource_conditions[].dimension` | Same dimension names as `CatalogPricingInputs`. |
-| `resource_conditions[].operator` | How `value` is compared. See the table below. |
-| `resource_conditions[].value` | Comparison value. Set for `EQUALS`. Empty for `ANY`. |
-| `rate.amount` | Provider rate as a decimal string. |
-| `rate.unit` | Provider unit, such as `hour` or `month`. OSAC does not rename it. |
-| `catalog_item_matches` | Names of OSAC catalog items whose default configuration this row can price. |
-
-`source`:
-
-| Value | Meaning |
-|---|---|
-| `BILLING_RATE_CARD_SOURCE_UNSPECIFIED` | Unset. Not a real card. |
-| `BILLING_RATE_CARD_SOURCE_CONTRACT` | A rate for this one account. |
-| `BILLING_RATE_CARD_SOURCE_DEFAULT` | The configured service rate card, the rates that apply to all accounts. OSAC uses it only when the provider confirms this account has no contract rate for the service. A failed or ambiguous contract lookup is an error and does not select this card. |
-
-`operator`:
-
-| Value | Meaning |
-|---|---|
-| `BILLING_RATE_MATCH_OPERATOR_UNSPECIFIED` | Unset. Not a real match. |
-| `BILLING_RATE_MATCH_OPERATOR_ANY` | The dimension may be any value. |
-| `BILLING_RATE_MATCH_OPERATOR_EQUALS` | The dimension must equal `value`. |
-
 The provider adapter translates each provider rate card into these rows. It does not evaluate arbitrary provider formula text. An unsupported rule shape returns an unavailable result, not a guessed price.
 
 #### `PricingQueries.Create`
@@ -453,14 +314,6 @@ The provider adapter translates each provider rate card into these rows. It does
 `POST /api/fulfillment/v1/billing/pricing_queries`. The call evaluates one selected configuration and stores nothing. `Create` is only the fulfillment name for a POST body.
 
 Request:
-
-| Field | Meaning |
-|---|---|
-| `tenant_id` | Cloud Provider Admin preview target. Tenant callers omit it and are scoped to their own tenant. |
-| `configuration` | Exactly one resource spec: `compute_instance`, `cluster`, or `bare_metal_instance`. |
-| `configuration.project` | Project the caller would provision into. Tenant callers must be allowed to use it. Omitted means the tenant's default project. |
-| `configuration.compute_instance` | Selected VMaaS spec. |
-| `configuration.cluster` | Selected CaaS spec. |
 
 ```json
 {
@@ -476,15 +329,6 @@ Request:
 
 Response:
 
-| Field | Meaning |
-|---|---|
-| `currency_code` | Linked account currency. |
-| `components[].service` | `compute_instance` or `cluster`. |
-| `components[].description` | Short label for this component, such as the selected instance type name. |
-| `components[].coverage` | Whether a rate exists. See the table below. |
-| `components[].amount` | Provider rate. Present only for `COVERED` and `STALE`. |
-| `components[].unit` | Provider unit, such as `hour`. Present only when `amount` is present. |
-
 ```json
 {
   "currency_code": "USD",
@@ -494,38 +338,15 @@ Response:
       "description": "large",
       "coverage": "PRICING_COVERAGE_STATE_COVERED",
       "amount": "9.00",
-      "unit": "hour"
+      "unit": "second"
     }
   ]
 }
 ```
 
-`coverage`:
-
-| Value | Meaning |
-|---|---|
-| `PRICING_COVERAGE_STATE_UNSPECIFIED` | Unset. Not a result. |
-| `PRICING_COVERAGE_STATE_COVERED` | A current rate matched. `amount` and `unit` are set. |
-| `PRICING_COVERAGE_STATE_GAP` | No rate for this metered component. `amount` and `unit` are omitted. This is not zero. |
-| `PRICING_COVERAGE_STATE_STALE` | A retained amount exists, but it is not a current read. It cannot pass a gate. |
-| `PRICING_COVERAGE_STATE_UNAVAILABLE` | The rate could not be read. No amount. |
-
 #### `PriceEstimates.Create`
 
 `POST /api/fulfillment/v1/billing/price_estimates`. The request fields are the same as `PricingQueries.Create`. The response is a prospective recurring estimate in the account currency. It is not a provider charge and not `BillingCosts`. The call fails with `FAILED_PRECONDITION` when any component is missing or stale, so a successful body uses `PRICE_ESTIMATE_STATUS_CURRENT` only.
-
-| Field | Meaning |
-|---|---|
-| `currency_code` | Linked account currency. |
-| `components[].service` | `compute_instance` or `cluster`. |
-| `components[].description` | Short label, such as the selected instance type name. |
-| `components[].rate_amount` | Provider rate, unchanged. |
-| `components[].rate_unit` | Provider unit, such as `hour` or `month`. |
-| `components[].hourly_amount` | OSAC hourly equivalent when `rate_unit` is time-based. Omitted otherwise. |
-| `components[].monthly_amount` | OSAC monthly equivalent. For an hourly rate this is `hourly_amount` times 730. The 730-hour month is an OSAC convention, not a provider bill. Omitted when the rate is not time-based. |
-| `hourly_amount` | Sum of component hourly amounts. |
-| `monthly_amount` | Sum of component monthly amounts. |
-| `status` | Freshness of the rates used. See the table below. |
 
 ```json
 {
@@ -545,14 +366,6 @@ Response:
   "status": "PRICE_ESTIMATE_STATUS_CURRENT"
 }
 ```
-
-`status`:
-
-| Value | Meaning |
-|---|---|
-| `PRICE_ESTIMATE_STATUS_UNSPECIFIED` | Unset. Not a successful estimate. |
-| `PRICE_ESTIMATE_STATUS_CURRENT` | Every component used a current rate. This is the only success value. |
-| `PRICE_ESTIMATE_STATUS_STALE` | Defined so a stale rate is not reported as current. |
 
 #### Catalog `List` and `Get` pricing
 
@@ -579,40 +392,11 @@ The example is that object on one catalog item. `status` is stale, so the amount
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `status` | Freshness of this default-configuration price. See the table below. |
-| `currency_code` | Linked account currency. Omitted when status is `UNAVAILABLE` and no currency was known. |
-| `components` | One entry per priced metered part of the default configuration. Empty when status is `UNAVAILABLE`. |
-| `components[].id` | Stable id the UI can key on. Shape is `{service}.{attribute}.{value}`, for example `compute_instance.instance_type.small`. |
-| `components[].attribute` | Metered dimension this amount prices. For this VMaaS example, `instance_type`. |
-| `components[].amount` | Provider rate for that attribute's default value. |
-| `components[].unit` | Provider unit, such as `hour`. |
-| `components[].description` | Short label. Here it is the instance type value, `small`, not a generic "Compute instance". |
-| `price_may_vary` | `true` when a billable field is editable, so another choice can cost a different amount. `false` when the priced values are locked. |
-| `as_of` | Time OSAC received the provider response. Set only for `CURRENT`. Omitted for `STALE` and `UNAVAILABLE`. |
-
-`status`:
-
-| Value | Meaning |
-|---|---|
-| `CATALOG_PRICING_STATUS_UNSPECIFIED` | Unset. The catalog item is returned without treating this as a price. |
-| `CATALOG_PRICING_STATUS_CURRENT` | Fresh provider read. `as_of` is set. This can satisfy a browse display. A gate still does its own fresh check. |
-| `CATALOG_PRICING_STATUS_STALE` | Retained amount after a failed refresh. Useful for browsing. Cannot pass a billing gate. No `as_of`. |
-| `CATALOG_PRICING_STATUS_UNAVAILABLE` | No amount. No `as_of`. |
-
 M360 has no observation timestamp to copy. If the provider supplies `fromDate` / `toDate`, expose them as an effective period, separate from `as_of`.
 
 #### `BillingCosts.List`
 
 `GET /api/fulfillment/v1/billing/costs`.
-
-| Query field | Meaning |
-|---|---|
-| `from_date` | Inclusive period start, `YYYY-MM-DD`. Required. The provider's period, not a calendar OSAC invents. |
-| `to_date` | Inclusive period end, `YYYY-MM-DD`. Required. Must be on or after `from_date`. |
-| `tenant_id` | Cloud Provider Admin target tenant. Tenant callers omit it. |
-| `offset`, `limit` | Page of the OSAC response. `limit` is 1 to 100. |
 
 ```json
 {
@@ -633,37 +417,17 @@ M360 has no observation timestamp to copy. If the provider supplies `fromDate` /
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `project_id` | OSAC project. A present empty string is the tenant's default project. Omitted when the provider did not attribute a project. Rows the caller cannot see are skipped. One such row does not fail the list. |
-| `resource_id` | OSAC resource id. Omitted when the provider did not attribute a resource. |
-| `service` | `compute_instance` or `cluster`. |
-| `amount` | Provider total for this service, project, and resource over the period. |
-| `currency_code` | Account currency. |
-| `period_start`, `period_end` | Period the amount covers, `YYYY-MM-DD`. |
-| `as_of` | Time OSAC fetched this result. Set on a successful read. |
-
 Under the 1:1 rule, a cost line with no tenant id is attributed to the linked tenant. A line that names a different tenant is dropped. There is no account-balance field.
 
 #### Not this increment
 
 These methods stay in [openapi.yaml](openapi.yaml) so a later increment does not invent a second contract. An unsupported provider returns `UNIMPLEMENTED` / `PROVIDER_CAPABILITY_UNSUPPORTED`, not an empty success.
 
-`DraftCharges.List` is `GET /api/fulfillment/v1/billing/draft_charges`. Required query fields are `tenant_id`, `from_date`, and `to_date`. Each item has `id`, `description`, `service`, optional `project_id` and `resource_id`, `amount`, `currency_code`, `period_start`, and `period_end`. There is no status enum. The row is one uninvoiced provider charge.
+`DraftCharges.List` is `GET /api/fulfillment/v1/billing/draft_charges`. It returns one provider charge per uninvoiced row. This read-only view is not part of this increment.
 
-`BillingInvoices.List` is `GET /api/fulfillment/v1/billing/invoices`, with optional `tenant_id`, `from_date`, and `to_date`. `Get` is `GET /api/fulfillment/v1/billing/invoices/{id}` and adds `items`. Header fields are `id` (the invoice number, not the provider record id), `invoice_number`, `invoice_date`, `status`, `type`, `amount`, `tax_amount`, `balance`, `currency_code`, `due_date`, `period_start`, `period_end`, `payment_status`, and `approval_status`. `status`, `type`, `payment_status`, and `approval_status` are provider strings. OSAC does not define an enum for them. Line fields are `description`, `service_name`, `service_code`, `volume`, `rate_per_unit`, `amount`, `tax_amount`, `balance`, `charge_type`, `price_method`, `period_start`, `period_end`, and `currency_code`. `List` returns headers only. OSAC does not issue or edit invoices.
+`BillingInvoices.List` is `GET /api/fulfillment/v1/billing/invoices`. `Get` is `GET /api/fulfillment/v1/billing/invoices/{id}` and includes the provider's line items. `List` returns headers only. OSAC does not issue or edit invoices.
 
-`BillingExports.Create` is `POST /api/fulfillment/v1/billing/exports`. The body is `tenant_id`, `from_date`, `to_date`, and `idempotency_key` (the same key retries the same export). `Get` is `GET /api/fulfillment/v1/billing/exports/{id}` with required `tenant_id`. The object adds `id`, `state`, `created_at`, and `completed_at`.
-
-`state`:
-
-| Value | Meaning |
-|---|---|
-| `BILLING_EXPORT_STATE_UNSPECIFIED` | Unset. Not a reported export. |
-| `BILLING_EXPORT_STATE_PENDING` | Accepted, not started. |
-| `BILLING_EXPORT_STATE_RUNNING` | The provider export is in progress. |
-| `BILLING_EXPORT_STATE_SUCCEEDED` | The export finished. |
-| `BILLING_EXPORT_STATE_FAILED` | The export failed. |
+`BillingExports.Create` is `POST /api/fulfillment/v1/billing/exports`. Reusing an idempotency key retries the same export. `Get` is `GET /api/fulfillment/v1/billing/exports/{id}`.
 
 Billing is optional per deployment. `BillingProviderStatuses.Get` reports `NOT_CONFIGURED`; provider-dependent methods return `FAILED_PRECONDITION/BILLING_NOT_CONFIGURED`. The OSAC-only catalog inventory remains available. Existing catalog methods return catalog data without pricing, and billing-specific publish/launch gates are skipped. Core authorization, catalog validation, and resource checks still apply.
 
